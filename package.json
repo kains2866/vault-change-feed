@@ -1,0 +1,25 @@
+{
+  "name": "vault-change-feed",
+  "version": "0.1.0",
+  "description": "Machine-readable vault change feed with per-reader cursors, built for AI assistants managing your Obsidian vault.",
+  "main": "main.js",
+  "scripts": {
+    "dev": "node esbuild.config.mjs",
+    "build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
+    "test": "vitest run --passWithNoTests"
+  },
+  "keywords": ["obsidian", "obsidian-plugin", "ai", "changelog"],
+  "author": "tiyukains",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "builtin-modules": "^5.0.0",
+    "esbuild": "^0.24.2",
+    "obsidian": "^1.7.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  },
+  "dependencies": {
+    "fflate": "^0.8.2"
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "id": "vault-change-feed",
+  "name": "Vault Change Feed",
+  "version": "0.1.0",
+  "minAppVersion": "1.5.0",
+  "description": "Records vault changes as a machine-readable feed with per-reader cursors, so AI assistants can incrementally catch up on what you changed.",
+  "author": "tiyukains",
+  "isDesktopOnly": true
+}
