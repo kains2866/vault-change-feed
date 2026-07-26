@@ -25,6 +25,19 @@ export function serializeBaseline(baseline: Baseline): Uint8Array {
 export function parseBaseline(data: Uint8Array): Baseline {
   const json = strFromU8(gunzipSync(data));
   const obj = JSON.parse(json) as Record<string, BaselineEntry>;
+  if (typeof obj !== 'object' || obj === null || Array.isArray(obj)) {
+    throw new Error('baseline: not an entry map');
+  }
+  for (const e of Object.values(obj)) {
+    if (
+      typeof e !== 'object' ||
+      e === null ||
+      typeof e.hash !== 'string' ||
+      !(typeof e.content === 'string' || e.content === null)
+    ) {
+      throw new Error('baseline: invalid entry');
+    }
+  }
   return new Map(Object.entries(obj));
 }
 

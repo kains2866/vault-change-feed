@@ -16,7 +16,7 @@ export function parseLog(content: string): ReadResult {
     if (!t) continue;
     try {
       const e = JSON.parse(t) as ChangeEvent;
-      if (typeof e.seq !== 'number') continue;
+      if (typeof e.seq !== 'number' || typeof e.op !== 'string' || typeof e.path !== 'string') continue;
       events.push(e);
       minSeq = minSeq === null ? e.seq : Math.min(minSeq, e.seq);
       maxSeq = maxSeq === null ? e.seq : Math.max(maxSeq, e.seq);

@@ -20,9 +20,11 @@ export async function getChanges(
   paths: FeedPaths,
   readerName: string,
 ): Promise<GetChangesResult> {
-  const cursors = await readCursors(io, paths.cursors);
+  const [cursors, { events, minSeq, maxSeq }] = await Promise.all([
+    readCursors(io, paths.cursors),
+    readLog(io, paths.log),
+  ]);
   const cursor = cursors[readerName] ?? 0;
-  const { events, minSeq, maxSeq } = await readLog(io, paths.log);
   return {
     events: events.filter(e => e.seq > cursor),
     stale: isStale(minSeq, cursor),

@@ -37,6 +37,12 @@ describe('reconcile', () => {
     });
   });
 
+  it('delete of a binary file has null stat', () => {
+    const old: Baseline = new Map([['p.png', makeBinaryEntry(100, 1000)]]);
+    const { events } = reconcile(old, [], 1, 7777);
+    expect(events[0]).toMatchObject({ op: 'delete', path: 'p.png', stat: null });
+  });
+
   it('modify with precise diff stat when both contents available', () => {
     const old: Baseline = new Map([['m.md', makeTextEntry('a\nb\nc')]]);
     const { events } = reconcile(old, [textSnap('m.md', 'a\nX\nc\nd')], 1, 9999);

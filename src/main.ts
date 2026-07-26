@@ -111,11 +111,9 @@ export default class VaultChangeFeedPlugin extends Plugin {
   }
 
   private async initFeed(): Promise<void> {
-    // seq 恢复：data.json 丢失时从日志尾部找回
-    if (this.lastSeq === 0) {
-      const r = await readLog(this.io, LOG_FILE);
-      this.lastSeq = r.maxSeq ?? 0;
-    }
+    // seq 恢复：无条件与日志尾部取 max，防 data.json 回退导致编号倒退
+    const r = await readLog(this.io, LOG_FILE);
+    this.lastSeq = Math.max(this.lastSeq, r.maxSeq ?? 0);
     this.feed = new EventFeed(this.lastSeq);
 
     // 载入基线；缺失（首跑）或损坏都走 resync：静默重建基线 + 一条 resync 事件
@@ -152,7 +150,10 @@ export default class VaultChangeFeedPlugin extends Plugin {
 
     this.registerInterval(window.setInterval(() => void this.flushEvents(), EVENT_FLUSH_MS));
     this.registerInterval(
-      window.setInterval(() => void this.saveBaseline(), this.settings.flushIntervalSec * 1000),
+      window.setInterval(
+        () => void (async () => { await this.flushEvents(); await this.saveBaseline(); })(),
+        this.settings.flushIntervalSec * 1000,
+      ),
     );
     this.registerInterval(window.setInterval(() => void this.rotate(), ROTATE_MS));
   }
@@ -198,30 +199,38 @@ export default class VaultChangeFeedPlugin extends Plugin {
 
   private async onCreate(f: TAbstractFile): Promise<void> {
     if (!(f instanceof TFile) || this.isExcludedPath(f.path)) return;
-    if (this.shouldTrackText(f)) {
-      const content = await this.app.vault.cachedRead(f);
-      this.baseline.set(f.path, makeTextEntry(content));
-      this.feed.push('create', f.path, { stat: { added: countLines(content), removed: 0 } });
-    } else {
-      this.baseline.set(f.path, makeBinaryEntry(f.stat.size, f.stat.mtime));
-      this.feed.push('create', f.path, { stat: null });
+    try {
+      if (this.shouldTrackText(f)) {
+        const content = await this.app.vault.cachedRead(f);
+        this.baseline.set(f.path, makeTextEntry(content));
+        this.feed.push('create', f.path, { stat: { added: countLines(content), removed: 0 } });
+      } else {
+        this.baseline.set(f.path, makeBinaryEntry(f.stat.size, f.stat.mtime));
+        this.feed.push('create', f.path, { stat: null });
+      }
+      this.baselineDirty = true;
+    } catch {
+      // iCloud 占位文件，下次启动对账兜底
     }
-    this.baselineDirty = true;
   }
 
   private async onModify(f: TAbstractFile): Promise<void> {
     if (!(f instanceof TFile) || this.isExcludedPath(f.path)) return;
-    if (this.shouldTrackText(f)) {
-      const content = await this.app.vault.cachedRead(f);
-      const old = this.baseline.get(f.path);
-      const stat = old && old.content !== null ? lineStat(old.content, content) : null;
-      this.baseline.set(f.path, makeTextEntry(content));
-      this.feed.push('modify', f.path, { stat });
-    } else {
-      this.baseline.set(f.path, makeBinaryEntry(f.stat.size, f.stat.mtime));
-      this.feed.push('modify', f.path, { stat: null });
+    try {
+      if (this.shouldTrackText(f)) {
+        const content = await this.app.vault.cachedRead(f);
+        const old = this.baseline.get(f.path);
+        const stat = old && old.content !== null ? lineStat(old.content, content) : null;
+        this.baseline.set(f.path, makeTextEntry(content));
+        this.feed.push('modify', f.path, { stat });
+      } else {
+        this.baseline.set(f.path, makeBinaryEntry(f.stat.size, f.stat.mtime));
+        this.feed.push('modify', f.path, { stat: null });
+      }
+      this.baselineDirty = true;
+    } catch {
+      // iCloud 占位文件，下次启动对账兜底
     }
-    this.baselineDirty = true;
   }
 
   private onDelete(f: TAbstractFile): void {
@@ -258,7 +267,7 @@ export default class VaultChangeFeedPlugin extends Plugin {
     const events = this.feed.drain();
     try {
       await appendEvents(this.io, LOG_FILE, events);
-      this.lastSeq = events[events.length - 1].seq;
+      this.lastSeq = Math.max(this.lastSeq, events[events.length - 1].seq);
       await this.saveData({ settings: this.settings, lastSeq: this.lastSeq } as PersistedData);
     } catch (err) {
       // 失败重入队列，下轮重试
@@ -353,6 +362,7 @@ class VaultChangeFeedSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('Retention days')
+      .setDesc('Log entries older than this are truncated.')
       .addText(t =>
         t.setValue(String(s.retentionDays)).onChange(async v => {
           const n = Number(v);
@@ -365,6 +375,7 @@ class VaultChangeFeedSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('Retention max entries')
+      .setDesc('Log is truncated to this many entries when exceeded — whichever limit hits first.')
       .addText(t =>
         t.setValue(String(s.retentionMaxEntries)).onChange(async v => {
           const n = Number(v);
@@ -377,6 +388,7 @@ class VaultChangeFeedSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('Baseline flush interval (s)')
+      .setDesc('How often the baseline snapshot is persisted. Takes effect after reload.')
       .addText(t =>
         t.setValue(String(s.flushIntervalSec)).onChange(async v => {
           const n = Number(v);

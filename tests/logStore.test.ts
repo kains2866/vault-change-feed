@@ -36,6 +36,13 @@ describe('parseLog', () => {
     const r = parseLog(`${good}\n{bad json\n\n${JSON.stringify(ev(6))}\n`);
     expect(r.events.map(e => e.seq)).toEqual([5, 6]);
   });
+
+  it('skips semantically corrupt lines (missing op/path)', () => {
+    const good = JSON.stringify(ev(6));
+    const r = parseLog(`{"seq": 5}\n${good}\n`);
+    expect(r.events.map(e => e.seq)).toEqual([6]);
+    expect(r.maxSeq).toBe(6);
+  });
 });
 
 describe('isStale', () => {

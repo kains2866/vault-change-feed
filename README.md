@@ -9,11 +9,13 @@ AI 不知道你背着它改了哪些笔记。全库扫描太贵；不问又会�
 ## 工作原理
 
 - 运行期：监听 Obsidian 的 create / modify / delete / rename 事件，行级 diff 统计增删行数
-- 启动时：与上次基线快照对账，补记 Obsidian 关闭期间（手机端、iCloud 同步、CLI 工具）发生的变更；同哈希的删+建自动识别为 rename
+- 启动时：与上次基线快照对账，补记 Obsidian 关闭期间（手机端、iCloud 同步、CLI 工具）发生的变更；同哈希的删+建自动识别为 rename（配对基于内容哈希；二进制文件经 iCloud 重新下载后 mtime 变化，可能退化为 delete+create 两条事件）
 - 数据全部本地，存放在 `.obsidian/plugins/vault-change-feed/`：
   - `changelog.jsonl` — 事件流，一行一条
   - `cursors.json` — 各读者的读取游标
   - `baseline.gz` — 内容基线快照（用于 diff 与对账）
+
+注意：同一 vault 同一时间只在一个 Obsidian 实例中启用本插件（多实例同时写入会导致 seq 冲突与文件互相覆盖）。
 
 ## 事件格式
 

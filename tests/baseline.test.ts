@@ -1,3 +1,4 @@
+import { gzipSync, strToU8 } from 'fflate';
 import { describe, it, expect } from 'vitest';
 import {
   Baseline,
@@ -40,5 +41,13 @@ describe('baseline serialize/parse', () => {
 
   it('throws on corrupt data', () => {
     expect(() => parseBaseline(new Uint8Array([1, 2, 3, 4]))).toThrow();
+  });
+
+  it('throws on semantically invalid entries', () => {
+    const gz = (v: unknown) => gzipSync(strToU8(JSON.stringify(v)));
+    expect(() => parseBaseline(gz(['not', 'a', 'map']))).toThrow();
+    expect(() => parseBaseline(gz({ 'a.md': { hash: 123, content: null } }))).toThrow();
+    expect(() => parseBaseline(gz({ 'a.md': { hash: 'abc', content: 42 } }))).toThrow();
+    expect(() => parseBaseline(gz({ 'a.md': null }))).toThrow();
   });
 });
