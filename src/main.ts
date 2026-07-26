@@ -1,3 +1,390 @@
-import { Plugin } from 'obsidian';
+import { App, Notice, Plugin, PluginSettingTab, Setting, TAbstractFile, TFile } from 'obsidian';
+import * as fs from 'fs/promises';
+import * as nodePath from 'path';
+import { FileIO } from './core/fileio';
+import { Baseline, makeTextEntry, makeBinaryEntry, serializeBaseline, parseBaseline, countLines } from './core/baseline';
+import { hashContent } from './core/hash';
+import { lineStat } from './core/diff';
+import { isExcluded, isTextFile, ExcludeOptions } from './core/exclude';
+import { reconcile, FileSnapshot } from './core/reconcile';
+import { readLog, appendEvents, rotateIfNeeded } from './core/logStore';
+import { EventFeed } from './core/feed';
+import { getChanges, markRead, formatEvents, FeedPaths } from './protocol';
+import {
+  VaultChangeFeedSettings,
+  DEFAULT_SETTINGS,
+  parseExtensions,
+  parseGlobs,
+} from './settings';
 
-export default class VaultChangeFeedPlugin extends Plugin {}
+const LOG_FILE = 'changelog.jsonl';
+const CURSORS_FILE = 'cursors.json';
+const BASELINE_FILE = 'baseline.gz';
+const EVENT_FLUSH_MS = 3000;
+const ROTATE_MS = 3600_000;
+
+class NodeFileIO implements FileIO {
+  constructor(private baseDir: string) {}
+  private abs(p: string): string {
+    return nodePath.join(this.baseDir, p);
+  }
+  async exists(p: string): Promise<boolean> {
+    try {
+      await fs.access(this.abs(p));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  async read(p: string): Promise<string> {
+    return fs.readFile(this.abs(p), 'utf8');
+  }
+  async readBinary(p: string): Promise<Uint8Array> {
+    return new Uint8Array(await fs.readFile(this.abs(p)));
+  }
+  async write(p: string, data: string): Promise<void> {
+    await fs.writeFile(this.abs(p), data, 'utf8');
+  }
+  async writeBinary(p: string, data: Uint8Array): Promise<void> {
+    await fs.writeFile(this.abs(p), data);
+  }
+  async append(p: string, data: string): Promise<void> {
+    await fs.appendFile(this.abs(p), data, 'utf8');
+  }
+  async rename(o: string, n: string): Promise<void> {
+    await fs.rename(this.abs(o), this.abs(n));
+  }
+  async mkdirp(): Promise<void> {
+    await fs.mkdir(this.baseDir, { recursive: true });
+  }
+}
+
+interface PersistedData {
+  settings: VaultChangeFeedSettings;
+  lastSeq: number;
+}
+
+export default class VaultChangeFeedPlugin extends Plugin {
+  settings: VaultChangeFeedSettings = { ...DEFAULT_SETTINGS };
+  api = {
+    getChanges: (readerName: string) => getChanges(this.io, this.feedPaths(), readerName),
+    markRead: (readerName: string, seq: number) => markRead(this.io, this.feedPaths(), readerName, seq),
+  };
+
+  private io!: FileIO;
+  private feed!: EventFeed;
+  private baseline: Baseline = new Map();
+  private baselineDirty = false;
+  private lastSeq = 0;
+
+  async onload(): Promise<void> {
+    const data = (await this.loadData()) as Partial<PersistedData> | null;
+    this.settings = { ...DEFAULT_SETTINGS, ...(data?.settings ?? {}) };
+    this.lastSeq = typeof data?.lastSeq === 'number' ? data.lastSeq : 0;
+
+    const basePath = (this.app.vault.adapter as unknown as { getBasePath(): string }).getBasePath();
+    const dataDir = nodePath.join(basePath, this.app.vault.configDir, 'plugins', this.manifest.id);
+    this.io = new NodeFileIO(dataDir);
+    await this.io.mkdirp();
+
+    this.addSettingTab(new VaultChangeFeedSettingTab(this.app, this));
+    this.addCommand({
+      id: 'copy-unread-for-ai',
+      name: 'Copy unread changes for AI',
+      callback: () => void this.copyUnread(),
+    });
+
+    // vault 索引完成后再初始化，避免启动期 create 事件风暴
+    this.app.workspace.onLayoutReady(() => void this.initFeed());
+  }
+
+  private feedPaths(): FeedPaths {
+    return { log: LOG_FILE, cursors: CURSORS_FILE };
+  }
+
+  private excludeOpts(): ExcludeOptions {
+    return {
+      configDir: this.app.vault.configDir,
+      trackedExtensions: parseExtensions(this.settings.trackedExtensions),
+      extraGlobs: parseGlobs(this.settings.excludeGlobs),
+    };
+  }
+
+  private async initFeed(): Promise<void> {
+    // seq 恢复：data.json 丢失时从日志尾部找回
+    if (this.lastSeq === 0) {
+      const r = await readLog(this.io, LOG_FILE);
+      this.lastSeq = r.maxSeq ?? 0;
+    }
+    this.feed = new EventFeed(this.lastSeq);
+
+    // 载入基线；缺失（首跑）或损坏都走 resync：静默重建基线 + 一条 resync 事件
+    let oldBaseline: Baseline | null = null;
+    if (await this.io.exists(BASELINE_FILE)) {
+      try {
+        oldBaseline = parseBaseline(await this.io.readBinary(BASELINE_FILE));
+      } catch {
+        oldBaseline = null;
+        new Notice('vault-change-feed: baseline corrupted, rebuilding');
+      }
+    }
+
+    const snapshots = await this.scanVault();
+
+    if (oldBaseline === null) {
+      this.baseline = new Map(snapshots.map(s => [s.path, { hash: s.hash, content: s.content }]));
+      this.feed.push('resync', '', { source: 'system', stat: null });
+    } else {
+      const { events, baseline } = reconcile(oldBaseline, snapshots, this.feed.peekNextSeq(), Date.now());
+      this.baseline = baseline;
+      for (const e of events) this.feed.pushLoaded(e);
+    }
+    this.baselineDirty = true;
+    await this.flushEvents();
+    await this.saveBaseline();
+    await this.rotate();
+
+    // 对账完成后再注册监听，缩小竞态窗口
+    this.registerEvent(this.app.vault.on('create', f => void this.onCreate(f)));
+    this.registerEvent(this.app.vault.on('modify', f => void this.onModify(f)));
+    this.registerEvent(this.app.vault.on('delete', f => void this.onDelete(f)));
+    this.registerEvent(this.app.vault.on('rename', (f, oldPath) => void this.onRename(f, oldPath)));
+
+    this.registerInterval(window.setInterval(() => void this.flushEvents(), EVENT_FLUSH_MS));
+    this.registerInterval(
+      window.setInterval(() => void this.saveBaseline(), this.settings.flushIntervalSec * 1000),
+    );
+    this.registerInterval(window.setInterval(() => void this.rotate(), ROTATE_MS));
+  }
+
+  /** 扫描 vault 生成快照；读不到的文件（iCloud 占位等）跳过，下轮对账再试 */
+  private async scanVault(): Promise<FileSnapshot[]> {
+    const opts = this.excludeOpts();
+    const capBytes = this.settings.largeFileKb * 1024;
+    const out: FileSnapshot[] = [];
+    for (const f of this.app.vault.getFiles()) {
+      if (isExcluded(f.path, opts)) continue;
+      if (isTextFile(f.path, opts.trackedExtensions) && f.stat.size <= capBytes) {
+        try {
+          const content = await this.app.vault.cachedRead(f);
+          out.push({ path: f.path, hash: hashContent(content), content, mtime: f.stat.mtime });
+        } catch {
+          // iCloud 占位文件等：跳过
+        }
+      } else {
+        out.push({
+          path: f.path,
+          hash: makeBinaryEntry(f.stat.size, f.stat.mtime).hash,
+          content: null,
+          mtime: f.stat.mtime,
+        });
+      }
+    }
+    return out;
+  }
+
+  private shouldTrackText(f: TFile): boolean {
+    const opts = this.excludeOpts();
+    return (
+      !isExcluded(f.path, opts) &&
+      isTextFile(f.path, opts.trackedExtensions) &&
+      f.stat.size <= this.settings.largeFileKb * 1024
+    );
+  }
+
+  private isExcludedPath(path: string): boolean {
+    return isExcluded(path, this.excludeOpts());
+  }
+
+  private async onCreate(f: TAbstractFile): Promise<void> {
+    if (!(f instanceof TFile) || this.isExcludedPath(f.path)) return;
+    if (this.shouldTrackText(f)) {
+      const content = await this.app.vault.cachedRead(f);
+      this.baseline.set(f.path, makeTextEntry(content));
+      this.feed.push('create', f.path, { stat: { added: countLines(content), removed: 0 } });
+    } else {
+      this.baseline.set(f.path, makeBinaryEntry(f.stat.size, f.stat.mtime));
+      this.feed.push('create', f.path, { stat: null });
+    }
+    this.baselineDirty = true;
+  }
+
+  private async onModify(f: TAbstractFile): Promise<void> {
+    if (!(f instanceof TFile) || this.isExcludedPath(f.path)) return;
+    if (this.shouldTrackText(f)) {
+      const content = await this.app.vault.cachedRead(f);
+      const old = this.baseline.get(f.path);
+      const stat = old && old.content !== null ? lineStat(old.content, content) : null;
+      this.baseline.set(f.path, makeTextEntry(content));
+      this.feed.push('modify', f.path, { stat });
+    } else {
+      this.baseline.set(f.path, makeBinaryEntry(f.stat.size, f.stat.mtime));
+      this.feed.push('modify', f.path, { stat: null });
+    }
+    this.baselineDirty = true;
+  }
+
+  private onDelete(f: TAbstractFile): void {
+    if (!(f instanceof TFile) || this.isExcludedPath(f.path)) return;
+    const old = this.baseline.get(f.path);
+    const stat = old && old.content !== null ? { added: 0, removed: countLines(old.content) } : null;
+    this.baseline.delete(f.path);
+    this.feed.push('delete', f.path, { stat });
+    this.baselineDirty = true;
+  }
+
+  private onRename(f: TAbstractFile, oldPath: string): void {
+    if (!(f instanceof TFile)) return;
+    const oldExcluded = this.isExcludedPath(oldPath);
+    const newExcluded = this.isExcludedPath(f.path);
+    if (oldExcluded && newExcluded) return;
+    const entry = this.baseline.get(oldPath);
+    if (entry) {
+      this.baseline.delete(oldPath);
+      this.baseline.set(f.path, entry);
+      this.baselineDirty = true;
+    }
+    if (oldExcluded) {
+      this.feed.push('create', f.path, { stat: null });
+    } else if (newExcluded) {
+      this.feed.push('delete', oldPath, { stat: null });
+    } else {
+      this.feed.push('rename', f.path, { oldPath, stat: { added: 0, removed: 0 } });
+    }
+  }
+
+  private async flushEvents(): Promise<void> {
+    if (!this.feed || this.feed.pending === 0) return;
+    const events = this.feed.drain();
+    try {
+      await appendEvents(this.io, LOG_FILE, events);
+      this.lastSeq = events[events.length - 1].seq;
+      await this.saveData({ settings: this.settings, lastSeq: this.lastSeq } as PersistedData);
+    } catch (err) {
+      // 失败重入队列，下轮重试
+      for (const e of events) this.feed.pushLoaded(e);
+      new Notice('vault-change-feed: failed to write changelog, will retry');
+      console.error('vault-change-feed flush failed', err);
+    }
+  }
+
+  private async saveBaseline(): Promise<void> {
+    if (!this.baselineDirty) return;
+    await this.io.writeBinary(BASELINE_FILE, serializeBaseline(this.baseline));
+    this.baselineDirty = false;
+  }
+
+  private async rotate(): Promise<void> {
+    try {
+      await rotateIfNeeded(
+        this.io,
+        LOG_FILE,
+        this.settings.retentionMaxEntries,
+        this.settings.retentionDays,
+        Date.now(),
+      );
+    } catch (err) {
+      console.error('vault-change-feed rotate failed', err);
+    }
+  }
+
+  private async copyUnread(): Promise<void> {
+    const res = await getChanges(this.io, this.feedPaths(), 'manual');
+    const header = res.stale ? 'STALE: log truncated, full vault rescan advised.\n' : '';
+    const body = res.events.length > 0 ? formatEvents(res.events) : '(no changes)';
+    await navigator.clipboard.writeText(header + body);
+    await markRead(this.io, this.feedPaths(), 'manual', res.latestSeq);
+    new Notice(`vault-change-feed: ${res.events.length} change(s) copied`);
+  }
+
+  async onunload(): Promise<void> {
+    // 尽力而为：插件卸载时把队列与基线落盘
+    if (this.feed) await this.flushEvents();
+    if (this.baselineDirty) await this.saveBaseline();
+  }
+
+  async saveSettings(): Promise<void> {
+    await this.saveData({ settings: this.settings, lastSeq: this.lastSeq } as PersistedData);
+  }
+}
+
+class VaultChangeFeedSettingTab extends PluginSettingTab {
+  constructor(app: App, private plugin: VaultChangeFeedPlugin) {
+    super(app, plugin);
+  }
+
+  display(): void {
+    const { containerEl } = this;
+    containerEl.empty();
+    const s = this.plugin.settings;
+
+    new Setting(containerEl)
+      .setName('Tracked text extensions')
+      .setDesc('Comma-separated, without dots. Changes to these files get diff stats.')
+      .addText(t =>
+        t.setValue(s.trackedExtensions).onChange(async v => {
+          s.trackedExtensions = v;
+          await this.plugin.saveSettings();
+        }),
+      );
+
+    new Setting(containerEl)
+      .setName('Exclude globs')
+      .setDesc('One per line. The .obsidian config dir is always excluded.')
+      .addTextArea(t =>
+        t.setValue(s.excludeGlobs).onChange(async v => {
+          s.excludeGlobs = v;
+          await this.plugin.saveSettings();
+        }),
+      );
+
+    new Setting(containerEl)
+      .setName('Large file threshold (KB)')
+      .setDesc('Text files larger than this skip diff stats.')
+      .addText(t =>
+        t.setValue(String(s.largeFileKb)).onChange(async v => {
+          const n = Number(v);
+          if (Number.isFinite(n) && n > 0) {
+            s.largeFileKb = n;
+            await this.plugin.saveSettings();
+          }
+        }),
+      );
+
+    new Setting(containerEl)
+      .setName('Retention days')
+      .addText(t =>
+        t.setValue(String(s.retentionDays)).onChange(async v => {
+          const n = Number(v);
+          if (Number.isFinite(n) && n > 0) {
+            s.retentionDays = n;
+            await this.plugin.saveSettings();
+          }
+        }),
+      );
+
+    new Setting(containerEl)
+      .setName('Retention max entries')
+      .addText(t =>
+        t.setValue(String(s.retentionMaxEntries)).onChange(async v => {
+          const n = Number(v);
+          if (Number.isFinite(n) && n >= 100) {
+            s.retentionMaxEntries = n;
+            await this.plugin.saveSettings();
+          }
+        }),
+      );
+
+    new Setting(containerEl)
+      .setName('Baseline flush interval (s)')
+      .addText(t =>
+        t.setValue(String(s.flushIntervalSec)).onChange(async v => {
+          const n = Number(v);
+          if (Number.isFinite(n) && n >= 30) {
+            s.flushIntervalSec = n;
+            await this.plugin.saveSettings();
+          }
+        }),
+      );
+  }
+}
