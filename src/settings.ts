@@ -15,6 +15,8 @@ export interface VaultChangeFeedSettings {
   syncClaudeMd: boolean;
   /** 插件版本变化后自动刷新已安装的协议块 */
   autoSyncProtocol: boolean;
+  /** 首次启用插件时自动把协议块写入 AGENTS.md / CLAUDE.md */
+  autoInstallProtocol: boolean;
 }
 
 export const DEFAULT_SETTINGS: VaultChangeFeedSettings = {
@@ -27,6 +29,7 @@ export const DEFAULT_SETTINGS: VaultChangeFeedSettings = {
   syncAgentsMd: true,
   syncClaudeMd: true,
   autoSyncProtocol: true,
+  autoInstallProtocol: true,
 };
 
 export function parseExtensions(s: string): string[] {

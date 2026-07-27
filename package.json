@@ -1,6 +1,6 @@
 {
   "name": "vault-change-feed",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Machine-readable vault change feed with per-reader cursors, built for AI assistants managing your Obsidian vault.",
   "main": "main.js",
   "scripts": {

@@ -180,9 +180,31 @@ export default class VaultChangeFeedPlugin extends Plugin {
     );
     this.registerInterval(window.setInterval(() => void this.rotate(), ROTATE_MS));
 
-    // 首次运行引导：两个公约文件都没装过协议块才提示；无论是否提示只检查一次
+    // 首次运行引导：autoInstallProtocol 开则自动写入缺失的协议块（无块才写，已有块不动）；
+    // 关则退回旧的 Notice 提示；无论走哪条路只执行一次
     if (!this.protocolNoticeShown) {
-      if (!(await this.hasAnyProtocolBlock([...PROTOCOL_FILES]))) {
+      if (this.settings.autoInstallProtocol) {
+        try {
+          const installed: string[] = [];
+          for (const path of this.protocolTargets()) {
+            const content = await this.readVaultFileOrNull(path);
+            if (content === null || !hasBlock(content)) {
+              await this.app.vault.adapter.write(path, upsertBlock(content, renderProtocolBlock()));
+              installed.push(path);
+            }
+          }
+          if (installed.length > 0) {
+            this.lastProtocolVersion = this.manifest.version;
+            new Notice(
+              `vault-change-feed: AI protocol auto-installed into ${installed.join(', ')} (manage in settings or commands)`,
+              10000,
+            );
+          }
+        } catch (err) {
+          new Notice('vault-change-feed: protocol auto-install failed, see console');
+          console.error('vault-change-feed auto-install failed', err);
+        }
+      } else if (!(await this.hasAnyProtocolBlock([...PROTOCOL_FILES]))) {
         new Notice(
           'vault-change-feed: run command "Install AI protocol for agents" to let AI agents discover the change feed',
           10000,
@@ -223,18 +245,25 @@ export default class VaultChangeFeedPlugin extends Plugin {
     return false;
   }
 
+  /** 无条件把协议块 upsert 到指定文件（install 命令 / 自动同步的刷新语义） */
+  private async writeProtocolFile(path: string): Promise<void> {
+    const content = await this.readVaultFileOrNull(path);
+    await this.app.vault.adapter.write(path, upsertBlock(content, renderProtocolBlock()));
+  }
+
   /**
    * 把协议块 upsert 到每个启用的目标文件（幂等）。
    * onlyExisting 为 true 时只刷新 hasBlock 已为真的文件（自动同步路径用），其余跳过。
    */
   private async installProtocol(onlyExisting = false): Promise<void> {
     try {
-      const block = renderProtocolBlock();
       const written: string[] = [];
       for (const path of this.protocolTargets()) {
-        const content = await this.readVaultFileOrNull(path);
-        if (onlyExisting && (content === null || !hasBlock(content))) continue;
-        await this.app.vault.adapter.write(path, upsertBlock(content, block));
+        if (onlyExisting) {
+          const content = await this.readVaultFileOrNull(path);
+          if (content === null || !hasBlock(content)) continue;
+        }
+        await this.writeProtocolFile(path);
         written.push(path);
       }
       this.lastProtocolVersion = this.manifest.version;
@@ -527,6 +556,16 @@ class VaultChangeFeedSettingTab extends PluginSettingTab {
             s.flushIntervalSec = n;
             await this.plugin.saveSettings();
           }
+        }),
+      );
+
+    new Setting(containerEl)
+      .setName('Auto-install AI protocol on first run')
+      .setDesc('Write the protocol block into AGENTS.md / CLAUDE.md automatically when the plugin is first enabled.')
+      .addToggle(t =>
+        t.setValue(s.autoInstallProtocol).onChange(async v => {
+          s.autoInstallProtocol = v;
+          await this.plugin.saveSettings();
         }),
       );
 
