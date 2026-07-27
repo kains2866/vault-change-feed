@@ -1,48 +1,50 @@
 # Vault Change Feed
 
-把 Obsidian vault 的变更记录为机器可读的事件流，并为每个读者（AI agent）维护独立的读取游标。AI 在管理知识库前读一次日志，就知道你自它上次访问以来改了什么，不用全量扫描。
+Records every change in your Obsidian vault as a machine-readable event feed, with an independent read cursor per reader (AI agent). Before an AI manages your notes, it reads the feed once and knows exactly what you changed since its last visit — no full-vault rescan needed.
 
-## 它解决什么问题
+[中文文档](README.zh-CN.md)
 
-AI 不知道你背着它改了哪些笔记。全库扫描太贵；不问又会基于过期认知乱改。本插件持续记录「哪个文件、增/删/改/重命名、增删多少行」，AI 按需增量拉取。
+## The problem
 
-## 工作原理
+Your AI assistant has no idea what you edited between sessions. Scanning the whole vault every time is expensive; not scanning means it works from stale knowledge. This plugin continuously records *which file changed, how (create/modify/delete/rename), and by how many lines* — the AI pulls that incrementally, on demand.
 
-- 运行期：监听 Obsidian 的 create / modify / delete / rename 事件，行级 diff 统计增删行数
-- 启动时：与上次基线快照对账，补记 Obsidian 关闭期间（手机端、iCloud 同步、CLI 工具）发生的变更；同哈希的删+建自动识别为 rename（配对基于内容哈希；二进制文件经 iCloud 重新下载后 mtime 变化，可能退化为 delete+create 两条事件）
-- 数据全部本地，存放在 `.obsidian/plugins/vault-change-feed/`：
-  - `changelog.jsonl` — 事件流，一行一条
-  - `cursors.json` — 各读者的读取游标
-  - `baseline.gz` — 内容基线快照（用于 diff 与对账）
+## How it works
 
-注意：同一 vault 同一时间只在一个 Obsidian 实例中启用本插件（多实例同时写入会导致 seq 冲突与文件互相覆盖）。
+- **Live**: listens to Obsidian's create / modify / delete / rename events and computes line-level diff stats
+- **On startup**: reconciles against the last baseline snapshot to backfill changes made while Obsidian was closed (phone, iCloud sync, CLI tools). A delete+create pair with identical content hash is reported as a rename (hash-based pairing; binary files re-downloaded by iCloud get a fresh mtime and may degrade to delete+create)
+- **All data stays local**, under `.obsidian/plugins/vault-change-feed/`:
+  - `changelog.jsonl` — the event stream, one JSON event per line
+  - `cursors.json` — per-reader read cursors
+  - `baseline.gz` — content baseline snapshot (for diffs and reconciliation)
 
-## 事件格式
+Note: enable the plugin in only **one Obsidian instance per vault at a time** (concurrent writers cause seq conflicts and file overwrites).
+
+## Event format
 
 ```json
-{"seq": 1284, "ts": 1785000000000, "op": "modify", "path": "ML/过拟合.md", "stat": {"added": 12, "removed": 3}, "source": "live"}
+{"seq": 1284, "ts": 1785000000000, "op": "modify", "path": "ML/overfitting.md", "stat": {"added": 12, "removed": 3}, "source": "live"}
 ```
 
-- `op`：`create` / `modify` / `delete` / `rename`（带 `oldPath`）/ `resync`（基线重建，见到它建议全量重扫）
-- `stat`：`{added, removed}` 增删行数；`null` 表示「变了但幅度未知，请打开看」（二进制、超大文件）
-- `source`：`live` / `reconcile`（启动补记）/ `system`
+- `op`: `create` / `modify` / `delete` / `rename` (carries `oldPath`) / `resync` (baseline rebuilt — full rescan advised)
+- `stat`: `{added, removed}` line counts; `null` means "changed, magnitude unknown — open the file" (binaries, oversized files)
+- `source`: `live` / `reconcile` (startup backfill) / `system`
 
-## 让 AI 发现 feed
+## Letting AI agents discover the feed
 
-其他 AI agent（Kimi Code / Claude Code / Codex 等）安装插件后默认不知道 feed 存在。启用插件后，一段读取协议会**自动**以标记块（`<!-- vault-change-feed:start/end -->`）写入 vault 根目录的 `AGENTS.md`、`CLAUDE.md` 与 `GEMINI.md` —— 前两个是各 AI 工具约定俗成的发现点（AGENTS.md 为跨工具标准，CLAUDE.md 对应 Claude Code），GEMINI.md 对应默认不读 AGENTS.md 的 Gemini CLI，开箱即用、零操作。
+AI agents don't know the feed exists out of the box. On first enable, the plugin **automatically** installs a reading-protocol block (wrapped in `<!-- vault-change-feed:start/end -->` markers) into the vault-root `AGENTS.md`, `CLAUDE.md`, and `GEMINI.md` — the conventional discovery points for coding agents (AGENTS.md is the cross-tool standard; CLAUDE.md for Claude Code; GEMINI.md for Gemini CLI, which doesn't read AGENTS.md by default). Zero clicks needed.
 
-- 可关闭：设置 `Auto-install AI protocol on first run` 关闭（`autoInstallProtocol: false`）后退回手动引导，仍有 `Install AI protocol for agents` / `Remove AI protocol from agent files` 命令手动管理
-- 幂等：重复运行只更新标记块内部，块外你自己的内容逐字保留；没有块则追加到文末并空一行分隔
-- 随版本自动刷新：插件升级后若协议文本有更新，会自动刷新已安装的块；自动同步只刷新已安装块的文件，不会替你创建新文件（可在设置里关闭 Auto-sync）
-- 命令 `Remove AI protocol from agent files` 彻底移除三个文件里的块；若文件只剩协议块则直接删除该文件
-- 写入目标可在设置中分别开关（Sync AGENTS.md / Sync CLAUDE.md / Sync GEMINI.md）
-- 没有文件访问权的 AI（纯网页对话等）仍走 `Copy unread changes for AI` 命令，把未读变更粘给它
+- **Opt-out**: disable `Auto-install AI protocol on first run` to fall back to a one-time notice; the `Install AI protocol for agents` / `Remove AI protocol from agent files` commands remain available
+- **Idempotent**: re-runs update only the marked block; your own content outside the markers is preserved verbatim
+- **Refreshes with the plugin**: after updates, installed blocks are refreshed automatically — but auto-sync only touches files that already have a block, it never creates new ones (can be disabled)
+- **Clean removal**: the remove command strips the block from all three files, deleting a file only if nothing else remains
+- **Per-file toggles**: Sync AGENTS.md / Sync CLAUDE.md / Sync GEMINI.md
+- AIs without filesystem access (plain web chats) use the `Copy unread changes for AI` command instead
 
-### 可选：SessionStart hook（免"自觉"，强制注入）
+### Optional: SessionStart hook (enforced, not "please read")
 
-协议块依赖 AI 自觉读取；`extras/vault-feed-hook.mjs` 提供更强保证——挂在 agent 的 SessionStart hook 上，会话启动时自动把未读变更（合并后）注入上下文并推进游标。脚本从会话 cwd 向上查找受跟踪的 vault，目录不在 vault 内或无未读时完全静默。
+The protocol block relies on the AI choosing to read it. `extras/vault-feed-hook.mjs` goes further: hooked into an agent's SessionStart event, it injects merged unread changes into the context automatically and advances the cursor. The script walks up from the session cwd to find a tracked vault, and stays completely silent outside a vault or when nothing is unread.
 
-Kimi Code（`~/.kimi-code/config.toml`）：
+Kimi Code (`~/.kimi-code/config.toml`):
 
 ```toml
 [[hooks]]
@@ -51,15 +53,15 @@ command = "node /path/to/extras/vault-feed-hook.mjs --reader=kimi-code --format=
 timeout = 10
 ```
 
-Claude Code（`~/.claude/settings.json` 的 `hooks.SessionStart`）：
+Claude Code (`hooks.SessionStart` in `~/.claude/settings.json`):
 
 ```json
 { "type": "command", "command": "node /path/to/extras/vault-feed-hook.mjs --reader=claude-code --format=claude", "timeout": 10 }
 ```
 
-`--reader` 为该 agent 的固定游标名；建议用 `node` 的绝对路径。
+`--reader` is the agent's stable cursor name. Use an absolute `node` path.
 
-## 给 AI agent 的协议（README 即接口文档）
+## Protocol for AI agents (this README is the interface doc)
 
 This vault is tracked by the **vault-change-feed** Obsidian plugin. Before editing notes, catch up on what the user changed since your last visit:
 
@@ -75,46 +77,45 @@ Inside Obsidian, other plugins/scripts can use the JS API instead of files:
 ```js
 const api = app.plugins.plugins['vault-change-feed'].api;
 const { events, stale, latestSeq } = await api.getChanges('my-plugin');
-// ...处理...
+// ...handle events...
 await api.markRead('my-plugin', latestSeq);
 ```
 
-JS API 的 `getChanges` 默认把同一文件的未读事件合并为一条（`api.getChanges(name, { merge: false })` 可得原始流；不可无损合并的组除外，见下）。直接读 `changelog.jsonl` 的外部 agent 看到的是原始事件流，如需合并可自行按以下规则实现：
+The JS API's `getChanges` merges unread events per file by default (`api.getChanges(name, { merge: false })` returns the raw stream; groups that can't be merged losslessly are passed through, see below). External agents reading `changelog.jsonl` directly see the raw event stream and may implement the same merging:
 
-- 先按 `seq` 排序（容忍日志乱序），再按 `path` 分组（`resync` 不合并，原样保留）；合并产出的 `seq`/`ts` 取组内最大，`source` 取组内最后一条
-- 窗口内 create 了又 delete → 整组丢弃；结尾是 delete 且组内含 rename → `delete`，path 取首个 rename 的 `oldPath`（不带 oldPath 字段，stat 取 delete 自身）；结尾是 delete → `delete`（stat 取最后一条 delete 自身）
-- 组内 delete 与 rename 交织且不属上一条 → 不合并，组内事件原样输出（任何合并都会丢某个路径的命运）
-- 删了又建 → `modify`（stat 为 null）；开头是 create → `create`；含 rename → `rename`（保留首个 rename 的 oldPath）；其余 → `modify`
-- 后三种的 stat：组内全部非 null 则逐项累加，否则 null；输出按合并后 seq 升序
+- Sort by `seq` first (the log may be out of order), then group by `path` (`resync` is never merged); merged events take the group's max `seq`/`ts` and the last event's `source`
+- Created and deleted within the window → group dropped; last event is `delete` and the group contains a rename → `delete` on the first rename's `oldPath` (no `oldPath` field, stat from the delete itself); last event is `delete` → `delete` (stat from the last delete)
+- Deletes and renames interleaved beyond the case above → not merged, group emitted as-is (any merge would lose some path's fate)
+- Deleted then re-created → `modify` (stat `null`); starts with create → `create`; contains a rename → `rename` (keeps the first rename's `oldPath`); otherwise → `modify`
+- For the last three, `stat` is the per-line sum if all entries are non-null, else `null`; output sorted by merged seq
 
-## 命令
+## Commands
 
-- `Copy unread changes for AI` — 把未读变更的紧凑摘要复制到剪贴板（读者名 `manual`），直接粘给任意 AI 对话。
+- `Copy unread changes for AI` — copies a compact summary of unread changes (reader `manual`) to the clipboard, ready to paste into any AI chat.
 
-## 设置
+## Settings
 
-| 设置 | 默认 | 说明 |
+| Setting | Default | Description |
 |---|---|---|
-| Tracked text extensions | `md, markdown, txt, canvas, json, csv` | 这些扩展名计算 diff 统计 |
-| Exclude globs | 空 | 额外排除规则；`.obsidian/` 恒排除 |
-| Large file threshold | 1024 KB | 超过则 stat 为 null |
-| Retention days / max entries | 90 / 50000 | 日志轮转，先到先截 |
-| Baseline flush interval | 300 s | 基线持久化周期 |
-| Auto-install AI protocol on first run | 开 | 首次启用插件时自动把协议块写入 AGENTS.md / CLAUDE.md / GEMINI.md |
-| Sync AGENTS.md | 开 | 把协议块安装到 vault 根目录 AGENTS.md |
-| Sync CLAUDE.md | 开 | 把协议块安装到 vault 根目录 CLAUDE.md |
-| Auto-sync protocol block | 开 | 插件升级后自动刷新已安装的协议块 |
+| Tracked text extensions | `md, markdown, txt, canvas, json, csv` | These extensions get diff stats |
+| Exclude globs | empty | Extra exclusion rules; `.obsidian/` is always excluded |
+| Large file threshold | 1024 KB | Larger files get `stat: null` |
+| Retention days / max entries | 90 / 50000 | Log rotation, whichever limit hits first |
+| Baseline flush interval | 300 s | Baseline persistence period |
+| Auto-install AI protocol on first run | on | Install the protocol block on first enable |
+| Sync AGENTS.md / CLAUDE.md / GEMINI.md | on | Per-file install targets |
+| Auto-sync protocol block | on | Refresh installed blocks after plugin updates |
 
-## 隐私
+## Privacy
 
-纯本地：不联网、不上传、不收集任何数据。所有文件都在你自己的 vault 里。
+Fully local: no network calls, no uploads, no data collection. Everything lives in your own vault.
 
-## 开发
+## Development
 
 ```bash
 npm install
-npm run build   # 类型检查 + 打包 main.js
+npm run build   # typecheck + bundle main.js
 npm test        # vitest
 ```
 
-桌面端专用（`isDesktopOnly: true`，使用 Node fs）。
+Desktop only (`isDesktopOnly: true`, uses Node fs).
