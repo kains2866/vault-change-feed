@@ -2,6 +2,9 @@ import { FileIO } from './core/fileio';
 import { readLog, isStale } from './core/logStore';
 import { readCursors, writeCursor } from './core/cursors';
 import { ChangeEvent } from './core/types';
+import { mergeEvents } from './core/merge';
+
+export { mergeEvents };
 
 export interface FeedPaths {
   log: string;
@@ -14,19 +17,26 @@ export interface GetChangesResult {
   latestSeq: number;
 }
 
+export interface GetChangesOptions {
+  /** 默认 true：读取侧按文件合并未读事件；false 返回原始事件流 */
+  merge?: boolean;
+}
+
 /** 拉取 readerName 的未读事件；不推进游标（读者处理完自己 markRead） */
 export async function getChanges(
   io: FileIO,
   paths: FeedPaths,
   readerName: string,
+  opts: GetChangesOptions = {},
 ): Promise<GetChangesResult> {
   const [cursors, { events, minSeq, maxSeq }] = await Promise.all([
     readCursors(io, paths.cursors),
     readLog(io, paths.log),
   ]);
   const cursor = cursors[readerName] ?? 0;
+  const unread = events.filter(e => e.seq > cursor);
   return {
-    events: events.filter(e => e.seq > cursor),
+    events: (opts.merge ?? true) ? mergeEvents(unread) : unread,
     stale: isStale(minSeq, cursor),
     latestSeq: maxSeq ?? cursor,
   };

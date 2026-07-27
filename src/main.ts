@@ -9,7 +9,7 @@ import { isExcluded, isTextFile, ExcludeOptions } from './core/exclude';
 import { reconcile, FileSnapshot } from './core/reconcile';
 import { readLog, appendEvents, rotateIfNeeded } from './core/logStore';
 import { EventFeed } from './core/feed';
-import { getChanges, markRead, formatEvents, FeedPaths } from './protocol';
+import { getChanges, markRead, formatEvents, FeedPaths, GetChangesOptions } from './protocol';
 import {
   VaultChangeFeedSettings,
   DEFAULT_SETTINGS,
@@ -67,7 +67,8 @@ interface PersistedData {
 export default class VaultChangeFeedPlugin extends Plugin {
   settings: VaultChangeFeedSettings = { ...DEFAULT_SETTINGS };
   api = {
-    getChanges: (readerName: string) => getChanges(this.io, this.feedPaths(), readerName),
+    getChanges: (readerName: string, opts?: GetChangesOptions) =>
+      getChanges(this.io, this.feedPaths(), readerName, opts),
     markRead: (readerName: string, seq: number) => markRead(this.io, this.feedPaths(), readerName, seq),
   };
 

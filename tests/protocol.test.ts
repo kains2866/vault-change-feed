@@ -50,6 +50,35 @@ describe('getChanges / markRead', () => {
   });
 });
 
+describe('getChanges merge 选项', () => {
+  const threeRaw: ChangeEvent[] = [
+    { seq: 1, ts: 1, op: 'modify', path: 'a.md', stat: { added: 1, removed: 0 }, source: 'live' },
+    { seq: 2, ts: 2, op: 'modify', path: 'b.md', stat: { added: 2, removed: 0 }, source: 'live' },
+    { seq: 3, ts: 3, op: 'modify', path: 'a.md', stat: { added: 3, removed: 1 }, source: 'live' },
+  ];
+
+  it('默认按文件合并未读事件，latestSeq 仍基于原始日志', async () => {
+    const io = new MemoryFileIO();
+    await appendEvents(io, paths.log, threeRaw);
+    const r = await getChanges(io, paths, 'kimi-cli');
+    expect(r.events.map(e => [e.seq, e.path])).toEqual([
+      [2, 'b.md'],
+      [3, 'a.md'],
+    ]);
+    expect(r.events[1].stat).toEqual({ added: 4, removed: 1 });
+    expect(r.latestSeq).toBe(3);
+    expect(r.stale).toBe(false);
+  });
+
+  it('merge: false 返回原始事件流', async () => {
+    const io = new MemoryFileIO();
+    await appendEvents(io, paths.log, threeRaw);
+    const r = await getChanges(io, paths, 'kimi-cli', { merge: false });
+    expect(r.events.map(e => e.seq)).toEqual([1, 2, 3]);
+    expect(r.latestSeq).toBe(3);
+  });
+});
+
 describe('formatEvents', () => {
   it('compact lines per op', () => {
     const out = formatEvents([

@@ -47,6 +47,13 @@ const { events, stale, latestSeq } = await api.getChanges('my-plugin');
 await api.markRead('my-plugin', latestSeq);
 ```
 
+JS API 的 `getChanges` 默认把同一文件的未读事件合并为一条（`api.getChanges(name, { merge: false })` 可得原始流）。直接读 `changelog.jsonl` 的外部 agent 看到的是原始事件流，如需合并可自行按以下规则实现：
+
+- 按 `path` 分组（`resync` 不合并，原样保留）；每组产出一条：`seq`/`ts` 取组内最大，`source` 取组内最后一条
+- 窗口内 create 了又 delete → 整组丢弃；结尾是 delete → `delete`（stat 取最后一条 delete 自身）
+- 删了又建 → `modify`（stat 为 null）；开头是 create → `create`；含 rename → `rename`（保留首个 rename 的 oldPath）；其余 → `modify`
+- 后三种的 stat：组内全部非 null 则逐项累加，否则 null；输出按合并后 seq 升序
+
 ## 命令
 
 - `Copy unread changes for AI` — 把未读变更的紧凑摘要复制到剪贴板（读者名 `manual`），直接粘给任意 AI 对话。
