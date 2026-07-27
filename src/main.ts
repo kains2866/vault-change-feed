@@ -1,6 +1,4 @@
-import { App, Notice, Plugin, PluginSettingTab, Setting, TAbstractFile, TFile } from 'obsidian';
-import * as fs from 'fs/promises';
-import * as nodePath from 'path';
+import { App, DataAdapter, Notice, Plugin, PluginSettingTab, Setting, TAbstractFile, TFile } from 'obsidian';
 import { FileIO } from './core/fileio';
 import { Baseline, makeTextEntry, makeBinaryEntry, serializeBaseline, parseBaseline, countLines } from './core/baseline';
 import { hashContent } from './core/hash';
@@ -27,39 +25,45 @@ const ROTATE_MS = 3600_000;
 /** AI agent 约定俗成的发现点（vault 根目录） */
 const PROTOCOL_FILES = ['AGENTS.md', 'CLAUDE.md', 'GEMINI.md'] as const;
 
-class NodeFileIO implements FileIO {
-  constructor(private baseDir: string) {}
+/** 基于 vault.adapter 的 FileIO：全部走 Obsidian 官方 API，桌面/移动端通用 */
+class AdapterFileIO implements FileIO {
+  constructor(
+    private adapter: DataAdapter,
+    private baseDir: string,
+  ) {}
   private abs(p: string): string {
-    return nodePath.join(this.baseDir, p);
+    return `${this.baseDir}/${p}`;
   }
   async exists(p: string): Promise<boolean> {
-    try {
-      await fs.access(this.abs(p));
-      return true;
-    } catch {
-      return false;
-    }
+    return this.adapter.exists(this.abs(p));
   }
   async read(p: string): Promise<string> {
-    return fs.readFile(this.abs(p), 'utf8');
+    return this.adapter.read(this.abs(p));
   }
   async readBinary(p: string): Promise<Uint8Array> {
-    return new Uint8Array(await fs.readFile(this.abs(p)));
+    return new Uint8Array(await this.adapter.readBinary(this.abs(p)));
   }
   async write(p: string, data: string): Promise<void> {
-    await fs.writeFile(this.abs(p), data, 'utf8');
+    await this.adapter.write(this.abs(p), data);
   }
   async writeBinary(p: string, data: Uint8Array): Promise<void> {
-    await fs.writeFile(this.abs(p), data);
+    // Uint8Array 可能是大 buffer 上的视图，按实际范围切片
+    await this.adapter.writeBinary(
+      this.abs(p),
+      data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer,
+    );
   }
   async append(p: string, data: string): Promise<void> {
-    await fs.appendFile(this.abs(p), data, 'utf8');
+    await this.adapter.append(this.abs(p), data);
   }
   async rename(o: string, n: string): Promise<void> {
-    await fs.rename(this.abs(o), this.abs(n));
+    await this.adapter.rename(this.abs(o), this.abs(n));
   }
   async mkdirp(): Promise<void> {
-    await fs.mkdir(this.baseDir, { recursive: true });
+    // 插件目录的父级（configDir/plugins）必然存在，单层 mkdir 即可
+    if (!(await this.adapter.exists(this.baseDir))) {
+      await this.adapter.mkdir(this.baseDir);
+    }
   }
 }
 
@@ -95,9 +99,8 @@ export default class VaultChangeFeedPlugin extends Plugin {
     if (typeof data?.lastProtocolVersion === 'string') this.lastProtocolVersion = data.lastProtocolVersion;
     this.protocolNoticeShown = data?.protocolNoticeShown === true;
 
-    const basePath = (this.app.vault.adapter as unknown as { getBasePath(): string }).getBasePath();
-    const dataDir = nodePath.join(basePath, this.app.vault.configDir, 'plugins', this.manifest.id);
-    this.io = new NodeFileIO(dataDir);
+    const dataDir = `${this.app.vault.configDir}/plugins/${this.manifest.id}`;
+    this.io = new AdapterFileIO(this.app.vault.adapter, dataDir);
     await this.io.mkdirp();
 
     this.addSettingTab(new VaultChangeFeedSettingTab(this.app, this));

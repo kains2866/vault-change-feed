@@ -117,4 +117,4 @@ npm run build   # 类型检查 + 打包 main.js
 npm test        # vitest
 ```
 
-桌面端专用（`isDesktopOnly: true`，使用 Node fs）。
+桌面端与移动端均可使用（文件操作全部走 Obsidian vault API）。

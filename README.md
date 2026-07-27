@@ -118,4 +118,4 @@ npm run build   # typecheck + bundle main.js
 npm test        # vitest
 ```
 
-Desktop only (`isDesktopOnly: true`, uses Node fs).
+Works on desktop and mobile (all file operations go through the Obsidian vault API).
