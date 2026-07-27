@@ -151,6 +151,8 @@ If this plugin saves you time, you can buy me a coffee — it keeps the developm
 
 <a href="https://buymeacoffee.com/kains3772d"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" height="48"></a>
 
+中国大陆用户也可以到[爱发电](https://ifdian.net/a/kains2866)支持我。
+
 ## License
 
 [MIT](LICENSE) © tiyukains
