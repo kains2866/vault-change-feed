@@ -458,10 +458,12 @@ export default class VaultChangeFeedPlugin extends Plugin {
     new Notice(`vault-change-feed: ${res.events.length} change(s) copied`);
   }
 
-  async onunload(): Promise<void> {
-    // 尽力而为：插件卸载时把队列与基线落盘
-    if (this.feed) await this.flushEvents();
-    if (this.baselineDirty) await this.saveBaseline();
+  onunload(): void {
+    // 尽力而为：插件卸载时把队列与基线落盘（fire-and-forget）
+    void (async () => {
+      if (this.feed) await this.flushEvents();
+      if (this.baselineDirty) await this.saveBaseline();
+    })();
   }
 
   private persistedData(): PersistedData {
@@ -500,7 +502,7 @@ class VaultChangeFeedSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('Exclude globs')
-      .setDesc('One per line. The .obsidian config dir is always excluded.')
+      .setDesc('One per line. The vault config folder is always excluded.')
       .addTextArea(t =>
         t.setValue(s.excludeGlobs).onChange(async v => {
           s.excludeGlobs = v;

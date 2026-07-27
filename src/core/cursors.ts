@@ -5,10 +5,10 @@ export type Cursors = Record<string, number>;
 export async function readCursors(io: FileIO, path: string): Promise<Cursors> {
   if (!(await io.exists(path))) return {};
   try {
-    const obj = JSON.parse(await io.read(path));
+    const obj: unknown = JSON.parse(await io.read(path));
     if (obj === null || typeof obj !== 'object' || Array.isArray(obj)) return {};
     const out: Cursors = {};
-    for (const [k, v] of Object.entries(obj)) {
+    for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
       if (typeof v === 'number' && Number.isFinite(v)) out[k] = v;
     }
     return out;
