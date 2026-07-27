@@ -192,7 +192,7 @@ export default class VaultChangeFeedPlugin extends Plugin {
           for (const path of this.protocolTargets()) {
             const content = await this.readVaultFileOrNull(path);
             if (content === null || !hasBlock(content)) {
-              await this.app.vault.adapter.write(path, upsertBlock(content, renderProtocolBlock()));
+              await this.app.vault.adapter.write(path, upsertBlock(content, renderProtocolBlock(this.app.vault.configDir)));
               installed.push(path);
             }
           }
@@ -252,7 +252,7 @@ export default class VaultChangeFeedPlugin extends Plugin {
   /** 无条件把协议块 upsert 到指定文件（install 命令 / 自动同步的刷新语义） */
   private async writeProtocolFile(path: string): Promise<void> {
     const content = await this.readVaultFileOrNull(path);
-    await this.app.vault.adapter.write(path, upsertBlock(content, renderProtocolBlock()));
+    await this.app.vault.adapter.write(path, upsertBlock(content, renderProtocolBlock(this.app.vault.configDir)));
   }
 
   /**
