@@ -1,18 +1,41 @@
 # Vault Change Feed
 
-Records every change in your Obsidian vault as a machine-readable event feed, with an independent read cursor per reader (AI agent). Before an AI manages your notes, it reads the feed once and knows exactly what you changed since its last visit — no full-vault rescan needed.
+**Give your AI agents a changelog of your vault.** Every edit you make is recorded as a machine-readable event feed with per-reader cursors — so any AI can catch up on what changed since its last visit, instead of blindly rescanning thousands of notes.
 
-[中文文档](https://github.com/kains2866/vault-change-feed/blob/main/README.zh-CN.md)
+[![GitHub release](https://img.shields.io/github/v/release/kains2866/vault-change-feed)](https://github.com/kains2866/vault-change-feed/releases)
+[![License: MIT](https://img.shields.io/github/license/kains2866/vault-change-feed)](LICENSE)
+[![Downloads](https://img.shields.io/github/downloads/kains2866/vault-change-feed/total)](https://github.com/kains2866/vault-change-feed/releases)
+
+[中文文档](https://github.com/kains2866/vault-change-feed/blob/main/README.zh-CN.md) · [Obsidian Community Listing](https://community.obsidian.md/plugins/vault-change-feed)
+
+---
+
+## Features
+
+- **Live change tracking** — create / modify / delete / rename events with line-level diff stats (`+added / −removed`)
+- **Offline backfill** — startup reconciliation catches edits made while Obsidian was closed (phone, iCloud sync, CLI tools); content-hash rename detection included
+- **Incremental AI reads** — each reader (AI agent) keeps its own cursor and pulls only what's new; per-file merge on read collapses edit bursts into one cumulative line
+- **Self-describing to agents** — a reading-protocol block is auto-installed into `AGENTS.md` / `CLAUDE.md` / `GEMINI.md` on first run, so coding agents discover the feed with zero setup
+- **Rotation + stale signal** — the log is capped (90 days / 50k entries by default); readers are told explicitly when they must do a full rescan
+- **Fully local** — no network, no telemetry, works on desktop and mobile
 
 ## The problem
 
-Your AI assistant has no idea what you edited between sessions. Scanning the whole vault every time is expensive; not scanning means it works from stale knowledge. This plugin continuously records *which file changed, how (create/modify/delete/rename), and by how many lines* — the AI pulls that incrementally, on demand.
+Your AI assistant has no idea what you edited between sessions. Scanning the whole vault every time is expensive; not scanning means it works from stale knowledge. This plugin continuously records *which file changed, how, and by how much* — the AI pulls that incrementally, on demand.
+
+## Installation
+
+**Community market (recommended):** Settings → Community plugins → Browse → search **Vault Change Feed** → Install → Enable. The AI protocol block installs itself on first run.
+
+**BRAT:** add `kains2866/vault-change-feed` as a beta plugin.
+
+**Manual:** copy `main.js` and `manifest.json` from the [latest release](https://github.com/kains2866/vault-change-feed/releases/latest) into `<vault>/.obsidian/plugins/vault-change-feed/`, then enable the plugin.
 
 ## How it works
 
 - **Live**: listens to Obsidian's create / modify / delete / rename events and computes line-level diff stats
-- **On startup**: reconciles against the last baseline snapshot to backfill changes made while Obsidian was closed (phone, iCloud sync, CLI tools). A delete+create pair with identical content hash is reported as a rename (hash-based pairing; binary files re-downloaded by iCloud get a fresh mtime and may degrade to delete+create)
-- **All data stays local**, under `.obsidian/plugins/vault-change-feed/`:
+- **On startup**: reconciles against the last baseline snapshot to backfill changes made while Obsidian was closed. A delete+create pair with identical content hash is reported as a rename (binary files re-downloaded by iCloud get a fresh mtime and may degrade to delete+create)
+- **All data stays local**, under `<configDir>/plugins/vault-change-feed/`:
   - `changelog.jsonl` — the event stream, one JSON event per line
   - `cursors.json` — per-reader read cursors
   - `baseline.gz` — content baseline snapshot (for diffs and reconciliation)
@@ -91,14 +114,15 @@ The JS API's `getChanges` merges unread events per file by default (`api.getChan
 
 ## Commands
 
-- `Copy unread changes for AI` — copies a compact summary of unread changes (reader `manual`) to the clipboard, ready to paste into any AI chat.
+- `Copy unread changes for AI` — copies a compact summary of unread changes (reader `manual`) to the clipboard, ready to paste into any AI chat
+- `Install AI protocol for agents` / `Remove AI protocol from agent files` — manage the discovery blocks in `AGENTS.md` / `CLAUDE.md` / `GEMINI.md`
 
 ## Settings
 
 | Setting | Default | Description |
 |---|---|---|
 | Tracked text extensions | `md, markdown, txt, canvas, json, csv` | These extensions get diff stats |
-| Exclude globs | empty | Extra exclusion rules; `.obsidian/` is always excluded |
+| Exclude globs | empty | Extra exclusion rules; the vault config folder is always excluded |
 | Large file threshold | 1024 KB | Larger files get `stat: null` |
 | Retention days / max entries | 90 / 50000 | Log rotation, whichever limit hits first |
 | Baseline flush interval | 300 s | Baseline persistence period |
@@ -119,3 +143,7 @@ npm test        # vitest
 ```
 
 Works on desktop and mobile (all file operations go through the Obsidian vault API).
+
+## License
+
+[MIT](LICENSE) © tiyukains

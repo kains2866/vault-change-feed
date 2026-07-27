@@ -1,6 +1,20 @@
 # Vault Change Feed
 
-把 Obsidian vault 的变更记录为机器可读的事件流，并为每个读者（AI agent）维护独立的读取游标。AI 在管理知识库前读一次日志，就知道你自它上次访问以来改了什么，不用全量扫描。
+**给你的 AI agent 一本 vault 变更日志。** 你的每一次编辑都被记录为机器可读的事件流，每个读者（AI agent）各持一个读取游标——AI 管理知识库前读一次日志，就知道你自它上次访问以来改了什么，不用全量扫描。
+
+[![GitHub release](https://img.shields.io/github/v/release/kains2866/vault-change-feed)](https://github.com/kains2866/vault-change-feed/releases)
+[![License: MIT](https://img.shields.io/github/license/kains2866/vault-change-feed)](LICENSE)
+[![Downloads](https://img.shields.io/github/downloads/kains2866/vault-change-feed/total)](https://github.com/kains2866/vault-change-feed/releases)
+
+[English README](https://github.com/kains2866/vault-change-feed/blob/main/README.md) · [Obsidian 社区插件页](https://community.obsidian.md/plugins/vault-change-feed)
+
+---
+
+## 安装
+
+**社区市场（推荐）**：设置 → 第三方插件 → 浏览 → 搜索 **Vault Change Feed** → 安装并启用。AI 协议块会在首次启用时自动装好。
+
+**手动安装**：把[最新 release](https://github.com/kains2866/vault-change-feed/releases/latest) 的 `main.js` 和 `manifest.json` 复制到 `<vault>/.obsidian/plugins/vault-change-feed/`，然后启用插件。
 
 ## 它解决什么问题
 
