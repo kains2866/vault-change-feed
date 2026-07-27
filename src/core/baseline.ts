@@ -13,6 +13,26 @@ export function makeTextEntry(content: string): BaselineEntry {
   return { hash: hashContent(content), content };
 }
 
+/**
+ * 预算内存全文：超预算只存哈希（变更检测仍精确，diff 退化为 stat null）。返回新 entry。
+ * usedBytes 为当前基线已占用的内容字节数（见 entryContentBytes）。
+ */
+export function makeTextEntryBudgeted(
+  content: string,
+  usedBytes: number,
+  budgetBytes: number,
+): BaselineEntry {
+  if (usedBytes + content.length * 2 > budgetBytes) {
+    return { hash: hashContent(content), content: null };
+  }
+  return makeTextEntry(content);
+}
+
+/** entry 全文占用的估算字节数（UTF-16 码元 × 2）；无全文为 0 */
+export function entryContentBytes(e: BaselineEntry): number {
+  return e.content === null ? 0 : e.content.length * 2;
+}
+
 export function makeBinaryEntry(size: number, mtime: number): BaselineEntry {
   return { hash: binaryHash(size, mtime), content: null };
 }

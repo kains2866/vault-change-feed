@@ -5,6 +5,8 @@ export interface VaultChangeFeedSettings {
   excludeGlobs: string;
   /** 超过该大小的文本文件跳过 diff（KB） */
   largeFileKb: number;
+  /** 基线全文内存预算（KB）：超预算文件只存哈希 */
+  baselineContentBudgetKb: number;
   retentionDays: number;
   retentionMaxEntries: number;
   /** 基线持久化周期（秒） */
@@ -25,6 +27,7 @@ export const DEFAULT_SETTINGS: VaultChangeFeedSettings = {
   trackedExtensions: 'md, markdown, txt, canvas, json, csv',
   excludeGlobs: '',
   largeFileKb: 1024,
+  baselineContentBudgetKb: 102400,
   retentionDays: 90,
   retentionMaxEntries: 50000,
   flushIntervalSec: 300,

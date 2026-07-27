@@ -29,7 +29,7 @@ AI 不知道你背着它改了哪些笔记。全库扫描太贵；不问又会�
   - `cursors.json` — 各读者的读取游标
   - `baseline.gz` — 内容基线快照（用于 diff 与对账）
 
-注意：同一 vault 同一时间只在一个 Obsidian 实例中启用本插件（多实例同时写入会导致 seq 冲突与文件互相覆盖）。
+注意：插件已内置**待机保护**——多实例通过心跳写者锁（`writer.lock`）协调，只有持锁实例记录变更，其余实例待机（只读 API 仍可用），锁 90 秒过期后待机实例自动接管。但仍建议同一 vault 同一时间只在一个 Obsidian 实例中启用本插件。
 
 ## 事件格式
 
@@ -112,6 +112,7 @@ JS API 的 `getChanges` 默认把同一文件的未读事件合并为一条（`a
 | Tracked text extensions | `md, markdown, txt, canvas, json, csv` | 这些扩展名计算 diff 统计 |
 | Exclude globs | 空 | 额外排除规则；`.obsidian/` 恒排除 |
 | Large file threshold | 1024 KB | 超过则 stat 为 null |
+| Baseline content budget | 102400 KB（100 MB） | 用于 diff 的全文内存预算；超预算文件只存哈希（stat 退化为 null） |
 | Retention days / max entries | 90 / 50000 | 日志轮转，先到先截 |
 | Baseline flush interval | 300 s | 基线持久化周期 |
 | Auto-install AI protocol on first run | 开 | 首次启用插件时自动把协议块写入 AGENTS.md / CLAUDE.md / GEMINI.md |

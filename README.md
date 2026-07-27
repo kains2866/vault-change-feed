@@ -40,7 +40,7 @@ Your AI assistant has no idea what you edited between sessions. Scanning the who
   - `cursors.json` — per-reader read cursors
   - `baseline.gz` — content baseline snapshot (for diffs and reconciliation)
 
-Note: enable the plugin in only **one Obsidian instance per vault at a time** (concurrent writers cause seq conflicts and file overwrites).
+Note: the plugin has built-in **standby protection** — concurrent instances coordinate through a heartbeat writer lock (`writer.lock`); only the lock holder records, other instances stand by (read-only API still works) and automatically take over once the lock goes stale (90 s). Still, prefer running it in only **one Obsidian instance per vault at a time**.
 
 ## Event format
 
@@ -124,6 +124,7 @@ The JS API's `getChanges` merges unread events per file by default (`api.getChan
 | Tracked text extensions | `md, markdown, txt, canvas, json, csv` | These extensions get diff stats |
 | Exclude globs | empty | Extra exclusion rules; the vault config folder is always excluded |
 | Large file threshold | 1024 KB | Larger files get `stat: null` |
+| Baseline content budget | 102400 KB (100 MB) | Text kept in memory for diffing; beyond the budget, files store hash only (`stat` falls back to `null`) |
 | Retention days / max entries | 90 / 50000 | Log rotation, whichever limit hits first |
 | Baseline flush interval | 300 s | Baseline persistence period |
 | Auto-install AI protocol on first run | on | Install the protocol block on first enable |

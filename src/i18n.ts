@@ -67,6 +67,14 @@ const strings = {
     en: 'vault-change-feed: {count} change(s) copied',
     zh: 'vault-change-feed：已复制 {count} 条变更',
   },
+  noticeStandby: {
+    en: 'vault-change-feed: another Obsidian instance is recording changes; this instance is standing by',
+    zh: 'vault-change-feed：另一个 Obsidian 实例正在记录变更，本实例待机中',
+  },
+  noticeSyncDetected: {
+    en: 'vault-change-feed: cloud sync detected ({kinds}) — avoid multiple Obsidian instances on this vault; standby protection is on',
+    zh: 'vault-change-feed：检测到云同步（{kinds}）——请避免多实例同时启用本插件，待机保护已开启',
+  },
   fileDeleted: { en: '{path} (file deleted)', zh: '{path}（文件已删除）' },
   // 设置页
   sTrackedExtsName: { en: 'Tracked text extensions', zh: '跟踪的文本扩展名' },
@@ -83,6 +91,11 @@ const strings = {
   sLargeFileDesc: {
     en: 'Text files larger than this skip diff stats.',
     zh: '超过该大小的文本文件跳过增删行数统计。',
+  },
+  sBudgetName: { en: 'Baseline content budget (KB)', zh: '基线内容预算（KB）' },
+  sBudgetDesc: {
+    en: 'Text kept in memory for diffing. Files beyond the budget store hash only (stat falls back to null).',
+    zh: '用于 diff 的全文内存预算。超出预算的文件只存哈希（增删行数退化为 null）。',
   },
   sRetentionDaysName: { en: 'Retention days', zh: '日志保留天数' },
   sRetentionDaysDesc: {

@@ -1,13 +1,22 @@
 import { App, DataAdapter, Notice, Plugin, PluginSettingTab, Setting, TAbstractFile, TFile, moment } from 'obsidian';
 import { detectLocale, setLocale, t } from './i18n';
 import { FileIO } from './core/fileio';
-import { Baseline, makeTextEntry, makeBinaryEntry, serializeBaseline, parseBaseline, countLines } from './core/baseline';
-import { hashContent } from './core/hash';
+import {
+  Baseline,
+  makeTextEntryBudgeted,
+  makeBinaryEntry,
+  entryContentBytes,
+  serializeBaseline,
+  parseBaseline,
+  countLines,
+} from './core/baseline';
 import { lineStat } from './core/diff';
 import { isExcluded, isTextFile, ExcludeOptions } from './core/exclude';
 import { reconcile, FileSnapshot } from './core/reconcile';
 import { readLog, appendEvents, rotateIfNeeded } from './core/logStore';
 import { EventFeed } from './core/feed';
+import { decideLock, parseLock, WriterLock } from './core/writerLock';
+import { detectSync, SyncSignals } from './core/syncDetect';
 import { hasBlock, upsertBlock, removeBlock } from './core/protocolBlock';
 import { renderProtocolBlock } from './core/protocolTemplate';
 import { getChanges, markRead, formatEvents, FeedPaths, GetChangesOptions } from './protocol';
@@ -23,6 +32,9 @@ const CURSORS_FILE = 'cursors.json';
 const BASELINE_FILE = 'baseline.gz';
 const EVENT_FLUSH_MS = 3000;
 const ROTATE_MS = 3600_000;
+const LOCK_FILE = 'writer.lock';
+/** 写者锁心跳周期；待机实例的接管检查同周期 */
+const LOCK_HEARTBEAT_MS = 30_000;
 /** AI agent 约定俗成的发现点（vault 根目录） */
 const PROTOCOL_FILES = ['AGENTS.md', 'CLAUDE.md', 'GEMINI.md'] as const;
 
@@ -60,6 +72,9 @@ class AdapterFileIO implements FileIO {
   async rename(o: string, n: string): Promise<void> {
     await this.adapter.rename(this.abs(o), this.abs(n));
   }
+  async remove(p: string): Promise<void> {
+    await this.adapter.remove(this.abs(p));
+  }
   async mkdirp(): Promise<void> {
     // 插件目录的父级（configDir/plugins）必然存在，单层 mkdir 即可
     if (!(await this.adapter.exists(this.baseDir))) {
@@ -75,6 +90,10 @@ interface PersistedData {
   lastProtocolVersion?: string;
   /** 首次运行引导 Notice 是否已展示过 */
   protocolNoticeShown?: boolean;
+  /** 本设备 ID（写者锁身份），首次运行生成并持久化 */
+  deviceId?: string;
+  /** 云同步提示是否已展示过（只提示一次） */
+  syncNoticeShown?: boolean;
 }
 
 export default class VaultChangeFeedPlugin extends Plugin {
@@ -92,14 +111,37 @@ export default class VaultChangeFeedPlugin extends Plugin {
   private lastSeq = 0;
   private lastProtocolVersion?: string;
   private protocolNoticeShown = false;
+  private deviceId = '';
+  private syncNoticeShown = false;
+  /** 基线全文当前占用的估算字节数（initFeed 对账后全量重算，之后增量维护） */
+  private baselineContentBytes = 0;
 
   async onload(): Promise<void> {
-    setLocale(detectLocale(moment.locale()));
+    // moment.locale 为非官方 API，可能抛异常；退回 navigator.language
+    let lang = 'en';
+    try {
+      lang = moment.locale() || 'en';
+    } catch {
+      lang = (typeof navigator !== 'undefined' && navigator.language) || 'en';
+    }
+    setLocale(detectLocale(lang));
     const data = (await this.loadData()) as Partial<PersistedData> | null;
     this.settings = { ...DEFAULT_SETTINGS, ...(data?.settings ?? {}) };
     this.lastSeq = typeof data?.lastSeq === 'number' ? data.lastSeq : 0;
     if (typeof data?.lastProtocolVersion === 'string') this.lastProtocolVersion = data.lastProtocolVersion;
     this.protocolNoticeShown = data?.protocolNoticeShown === true;
+    this.syncNoticeShown = data?.syncNoticeShown === true;
+
+    // 设备 ID：写者锁的身份标识；没有则生成并立即持久化
+    this.deviceId = typeof data?.deviceId === 'string' ? data.deviceId : '';
+    if (this.deviceId.length === 0) {
+      try {
+        this.deviceId = crypto.randomUUID();
+      } catch {
+        this.deviceId = Date.now().toString(36) + Math.random().toString(36).slice(2);
+      }
+      await this.saveData(this.persistedData());
+    }
 
     const dataDir = `${this.app.vault.configDir}/plugins/${this.manifest.id}`;
     this.io = new AdapterFileIO(this.app.vault.adapter, dataDir);
@@ -122,8 +164,8 @@ export default class VaultChangeFeedPlugin extends Plugin {
       callback: () => void this.removeProtocol(),
     });
 
-    // vault 索引完成后再初始化，避免启动期 create 事件风暴
-    this.app.workspace.onLayoutReady(() => void this.initFeed());
+    // vault 索引完成后再启动，避免启动期 create 事件风暴；多实例时进入待机
+    this.app.workspace.onLayoutReady(() => void this.startFeed());
   }
 
   private feedPaths(): FeedPaths {
@@ -136,6 +178,69 @@ export default class VaultChangeFeedPlugin extends Plugin {
       trackedExtensions: parseExtensions(this.settings.trackedExtensions),
       extraGlobs: parseGlobs(this.settings.excludeGlobs),
     };
+  }
+
+  /** 读 writer.lock；缺失/损坏一律视为无锁 */
+  private async readLock(): Promise<WriterLock | null> {
+    try {
+      if (!(await this.io.exists(LOCK_FILE))) return null;
+      return parseLock(await this.io.read(LOCK_FILE));
+    } catch {
+      return null;
+    }
+  }
+
+  /** 写心跳；失败静默（不阻断记录，下个周期重试） */
+  private async writeLock(): Promise<void> {
+    try {
+      await this.io.write(LOCK_FILE, JSON.stringify({ deviceId: this.deviceId, ts: Date.now() }));
+    } catch {
+      // 静默
+    }
+  }
+
+  /**
+   * 启动入口：竞争写者锁。抢到则初始化；否则进入待机——不注册 vault 监听、
+   * 不写任何文件，周期性检查锁以便接管。只读接口（api.getChanges）待机下仍可用。
+   */
+  private async startFeed(): Promise<void> {
+    const existing = await this.readLock();
+    if (decideLock(existing, this.deviceId, Date.now()) === 'standby') {
+      new Notice(t('noticeStandby'));
+      this.registerInterval(window.setInterval(() => void this.tryTakeover(), LOCK_HEARTBEAT_MS));
+      return;
+    }
+    await this.writeLock();
+    await this.initFeed();
+  }
+
+  /** 待机实例的接管检查：锁被释放或过期则升级为写者 */
+  private async tryTakeover(): Promise<void> {
+    if (this.feed) return; // 已初始化
+    const existing = await this.readLock();
+    if (decideLock(existing, this.deviceId, Date.now()) === 'take') {
+      await this.writeLock();
+      await this.initFeed();
+    }
+  }
+
+  /** 收集云同步检测信号；桌面/移动端兼容，单项失败降级不误判 */
+  private async collectSyncSignals(): Promise<SyncSignals> {
+    let basePath: string | null = null;
+    try {
+      basePath = (this.app.vault.adapter as any).getBasePath() as string;
+    } catch {
+      basePath = null;
+    }
+    let obsidianSyncEnabled = false;
+    try {
+      obsidianSyncEnabled = (this.app as any).internalPlugins?.plugins?.sync?.enabled === true;
+    } catch {
+      obsidianSyncEnabled = false;
+    }
+    const hasStFolder = await this.app.vault.adapter.exists('.stfolder');
+    const hasGit = await this.app.vault.adapter.exists('.git');
+    return { basePath, obsidianSyncEnabled, hasStFolder, hasGit };
   }
 
   private async initFeed(): Promise<void> {
@@ -165,6 +270,19 @@ export default class VaultChangeFeedPlugin extends Plugin {
       this.baseline = baseline;
       for (const e of events) this.feed.pushLoaded(e);
     }
+
+    // 预算计数器：对账后基线才是最新状态，全量重算一次，之后增量维护
+    this.baselineContentBytes = 0;
+    for (const e of this.baseline.values()) this.baselineContentBytes += entryContentBytes(e);
+
+    // 云同步检测：多端同步环境下尤其要避免多实例写入；只提示一次
+    const syncDetected = detectSync(await this.collectSyncSignals());
+    if (syncDetected.length > 0 && !this.syncNoticeShown) {
+      new Notice(t('noticeSyncDetected', { kinds: syncDetected.join(', ') }), 10000);
+      this.syncNoticeShown = true;
+      await this.saveData(this.persistedData());
+    }
+
     this.baselineDirty = true;
     await this.flushEvents();
     await this.saveBaseline();
@@ -184,6 +302,8 @@ export default class VaultChangeFeedPlugin extends Plugin {
       ),
     );
     this.registerInterval(window.setInterval(() => void this.rotate(), ROTATE_MS));
+    // 写者锁心跳：证明本实例存活，防止待机实例误接管
+    this.registerInterval(window.setInterval(() => void this.writeLock(), LOCK_HEARTBEAT_MS));
 
     // 首次运行引导：autoInstallProtocol 开则自动写入缺失的协议块（无块才写，已有块不动）；
     // 关则退回旧的 Notice 提示；无论走哪条路只执行一次
@@ -312,13 +432,18 @@ export default class VaultChangeFeedPlugin extends Plugin {
   private async scanVault(): Promise<FileSnapshot[]> {
     const opts = this.excludeOpts();
     const capBytes = this.settings.largeFileKb * 1024;
+    const budgetBytes = this.settings.baselineContentBudgetKb * 1024;
+    let usedBytes = 0;
     const out: FileSnapshot[] = [];
     for (const f of this.app.vault.getFiles()) {
       if (isExcluded(f.path, opts)) continue;
       if (isTextFile(f.path, opts.trackedExtensions) && f.stat.size <= capBytes) {
         try {
           const content = await this.app.vault.cachedRead(f);
-          out.push({ path: f.path, hash: hashContent(content), content, mtime: f.stat.mtime });
+          // 预算决策快照 content：超预算只存哈希（hash 仍按全文算，变更检测不受影响）
+          const entry = makeTextEntryBudgeted(content, usedBytes, budgetBytes);
+          out.push({ path: f.path, hash: entry.hash, content: entry.content, mtime: f.stat.mtime });
+          usedBytes += entryContentBytes(entry);
         } catch {
           // iCloud 占位文件等：跳过
         }
@@ -352,9 +477,19 @@ export default class VaultChangeFeedPlugin extends Plugin {
     try {
       if (this.shouldTrackText(f)) {
         const content = await this.app.vault.cachedRead(f);
-        this.baseline.set(f.path, makeTextEntry(content));
+        const old = this.baseline.get(f.path);
+        if (old) this.baselineContentBytes -= entryContentBytes(old);
+        const entry = makeTextEntryBudgeted(
+          content,
+          this.baselineContentBytes,
+          this.settings.baselineContentBudgetKb * 1024,
+        );
+        this.baseline.set(f.path, entry);
+        this.baselineContentBytes += entryContentBytes(entry);
         this.feed.push('create', f.path, { stat: { added: countLines(content), removed: 0 } });
       } else {
+        const old = this.baseline.get(f.path);
+        if (old) this.baselineContentBytes -= entryContentBytes(old);
         this.baseline.set(f.path, makeBinaryEntry(f.stat.size, f.stat.mtime));
         this.feed.push('create', f.path, { stat: null });
       }
@@ -371,9 +506,18 @@ export default class VaultChangeFeedPlugin extends Plugin {
         const content = await this.app.vault.cachedRead(f);
         const old = this.baseline.get(f.path);
         const stat = old && old.content !== null ? lineStat(old.content, content) : null;
-        this.baseline.set(f.path, makeTextEntry(content));
+        if (old) this.baselineContentBytes -= entryContentBytes(old);
+        const entry = makeTextEntryBudgeted(
+          content,
+          this.baselineContentBytes,
+          this.settings.baselineContentBudgetKb * 1024,
+        );
+        this.baseline.set(f.path, entry);
+        this.baselineContentBytes += entryContentBytes(entry);
         this.feed.push('modify', f.path, { stat });
       } else {
+        const old = this.baseline.get(f.path);
+        if (old) this.baselineContentBytes -= entryContentBytes(old);
         this.baseline.set(f.path, makeBinaryEntry(f.stat.size, f.stat.mtime));
         this.feed.push('modify', f.path, { stat: null });
       }
@@ -387,6 +531,7 @@ export default class VaultChangeFeedPlugin extends Plugin {
     if (!(f instanceof TFile) || this.isExcludedPath(f.path)) return;
     const old = this.baseline.get(f.path);
     const stat = old && old.content !== null ? { added: 0, removed: countLines(old.content) } : null;
+    if (old) this.baselineContentBytes -= entryContentBytes(old);
     this.baseline.delete(f.path);
     this.feed.push('delete', f.path, { stat });
     this.baselineDirty = true;
@@ -458,10 +603,18 @@ export default class VaultChangeFeedPlugin extends Plugin {
   }
 
   onunload(): void {
-    // 尽力而为：插件卸载时把队列与基线落盘（fire-and-forget）
+    // 尽力而为：插件卸载时把队列与基线落盘，最后释放写者锁（fire-and-forget）
     void (async () => {
-      if (this.feed) await this.flushEvents();
-      if (this.baselineDirty) await this.saveBaseline();
+      if (this.feed) {
+        await this.flushEvents();
+        if (this.baselineDirty) await this.saveBaseline();
+        // 只有写者（feed 已初始化）才持有锁；清理失败无碍，90s 后自然过期
+        try {
+          await this.io.remove(LOCK_FILE);
+        } catch {
+          // 锁清理失败不管
+        }
+      }
     })();
   }
 
@@ -471,6 +624,8 @@ export default class VaultChangeFeedPlugin extends Plugin {
       lastSeq: this.lastSeq,
       lastProtocolVersion: this.lastProtocolVersion,
       protocolNoticeShown: this.protocolNoticeShown,
+      deviceId: this.deviceId,
+      syncNoticeShown: this.syncNoticeShown,
     };
   }
 
@@ -517,6 +672,19 @@ class VaultChangeFeedSettingTab extends PluginSettingTab {
           const n = Number(v);
           if (Number.isFinite(n) && n > 0) {
             s.largeFileKb = n;
+            await this.plugin.saveSettings();
+          }
+        }),
+      );
+
+    new Setting(containerEl)
+      .setName(t('sBudgetName'))
+      .setDesc(t('sBudgetDesc'))
+      .addText(t =>
+        t.setValue(String(s.baselineContentBudgetKb)).onChange(async v => {
+          const n = Number(v);
+          if (Number.isFinite(n) && n > 0) {
+            s.baselineContentBudgetKb = n;
             await this.plugin.saveSettings();
           }
         }),

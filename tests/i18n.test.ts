@@ -38,3 +38,23 @@ describe('t', () => {
     expect(t('noticeCopied')).toContain('{count}');
   });
 });
+
+describe('v1.2.0 新键', () => {
+  const newKeys = ['noticeStandby', 'noticeSyncDetected', 'sBudgetName', 'sBudgetDesc'] as const;
+
+  it('en / zh 均非空', () => {
+    for (const key of newKeys) {
+      setLocale('en');
+      expect(t(key).length).toBeGreaterThan(0);
+      setLocale('zh');
+      expect(t(key).length).toBeGreaterThan(0);
+    }
+  });
+
+  it('noticeSyncDetected 替换 {kinds} 占位符', () => {
+    setLocale('en');
+    expect(t('noticeSyncDetected', { kinds: 'icloud, git' })).toContain('icloud, git');
+    setLocale('zh');
+    expect(t('noticeSyncDetected', { kinds: 'icloud' })).toContain('icloud');
+  });
+});

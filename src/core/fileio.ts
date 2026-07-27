@@ -6,6 +6,7 @@ export interface FileIO {
   writeBinary(path: string, data: Uint8Array): Promise<void>;
   append(path: string, data: string): Promise<void>;
   rename(oldPath: string, newPath: string): Promise<void>;
+  remove(path: string): Promise<void>;
   mkdirp(): Promise<void>;
 }
 
@@ -46,6 +47,10 @@ export class MemoryFileIO implements FileIO {
     if (v === undefined) throw new Error('ENOENT: ' + oldPath);
     this.files.delete(oldPath);
     this.files.set(newPath, v);
+  }
+
+  async remove(path: string): Promise<void> {
+    if (!this.files.delete(path)) throw new Error('ENOENT: ' + path);
   }
 
   async mkdirp(): Promise<void> {}
