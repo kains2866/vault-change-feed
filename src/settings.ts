@@ -13,6 +13,8 @@ export interface VaultChangeFeedSettings {
   syncAgentsMd: boolean;
   /** 把协议块安装到 vault 根目录 CLAUDE.md */
   syncClaudeMd: boolean;
+  /** GEMINI.md 是否写入协议块（Gemini CLI 的发现点） */
+  syncGeminiMd: boolean;
   /** 插件版本变化后自动刷新已安装的协议块 */
   autoSyncProtocol: boolean;
   /** 首次启用插件时自动把协议块写入 AGENTS.md / CLAUDE.md */
@@ -28,6 +30,7 @@ export const DEFAULT_SETTINGS: VaultChangeFeedSettings = {
   flushIntervalSec: 300,
   syncAgentsMd: true,
   syncClaudeMd: true,
+  syncGeminiMd: true,
   autoSyncProtocol: true,
   autoInstallProtocol: true,
 };

@@ -25,7 +25,7 @@ const BASELINE_FILE = 'baseline.gz';
 const EVENT_FLUSH_MS = 3000;
 const ROTATE_MS = 3600_000;
 /** AI agent 约定俗成的发现点（vault 根目录） */
-const PROTOCOL_FILES = ['AGENTS.md', 'CLAUDE.md'] as const;
+const PROTOCOL_FILES = ['AGENTS.md', 'CLAUDE.md', 'GEMINI.md'] as const;
 
 class NodeFileIO implements FileIO {
   constructor(private baseDir: string) {}
@@ -227,6 +227,7 @@ export default class VaultChangeFeedPlugin extends Plugin {
     const targets: string[] = [];
     if (this.settings.syncAgentsMd) targets.push('AGENTS.md');
     if (this.settings.syncClaudeMd) targets.push('CLAUDE.md');
+    if (this.settings.syncGeminiMd) targets.push('GEMINI.md');
     return targets;
   }
 
@@ -273,7 +274,7 @@ export default class VaultChangeFeedPlugin extends Plugin {
           ? `vault-change-feed: AI protocol installed into ${written.join(', ')}`
           : onlyExisting
             ? 'vault-change-feed: protocol block already up to date'
-            : 'vault-change-feed: no target enabled (AGENTS.md / CLAUDE.md both off in settings)',
+            : 'vault-change-feed: no target enabled (all protocol targets off in settings)',
       );
     } catch (err) {
       new Notice('vault-change-feed: protocol command failed, see console');
@@ -300,7 +301,7 @@ export default class VaultChangeFeedPlugin extends Plugin {
       new Notice(
         removed.length > 0
           ? `vault-change-feed: AI protocol removed from ${removed.join(', ')}`
-          : 'vault-change-feed: no AI protocol block found in AGENTS.md / CLAUDE.md',
+          : 'vault-change-feed: no AI protocol block found in AGENTS.md / CLAUDE.md / GEMINI.md',
       );
     } catch (err) {
       new Notice('vault-change-feed: protocol command failed, see console');
@@ -561,7 +562,7 @@ class VaultChangeFeedSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('Auto-install AI protocol on first run')
-      .setDesc('Write the protocol block into AGENTS.md / CLAUDE.md automatically when the plugin is first enabled.')
+      .setDesc('Write the protocol block into AGENTS.md / CLAUDE.md / GEMINI.md automatically when the plugin is first enabled.')
       .addToggle(t =>
         t.setValue(s.autoInstallProtocol).onChange(async v => {
           s.autoInstallProtocol = v;
@@ -585,6 +586,16 @@ class VaultChangeFeedSettingTab extends PluginSettingTab {
       .addToggle(t =>
         t.setValue(s.syncClaudeMd).onChange(async v => {
           s.syncClaudeMd = v;
+          await this.plugin.saveSettings();
+        }),
+      );
+
+    new Setting(containerEl)
+      .setName('Sync GEMINI.md')
+      .setDesc('Install protocol block into GEMINI.md (read by Gemini CLI)')
+      .addToggle(t =>
+        t.setValue(s.syncGeminiMd).onChange(async v => {
+          s.syncGeminiMd = v;
           await this.plugin.saveSettings();
         }),
       );
