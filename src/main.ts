@@ -1,4 +1,5 @@
-import { App, DataAdapter, Notice, Plugin, PluginSettingTab, Setting, TAbstractFile, TFile } from 'obsidian';
+import { App, DataAdapter, Notice, Plugin, PluginSettingTab, Setting, TAbstractFile, TFile, moment } from 'obsidian';
+import { detectLocale, setLocale, t } from './i18n';
 import { FileIO } from './core/fileio';
 import { Baseline, makeTextEntry, makeBinaryEntry, serializeBaseline, parseBaseline, countLines } from './core/baseline';
 import { hashContent } from './core/hash';
@@ -93,6 +94,7 @@ export default class VaultChangeFeedPlugin extends Plugin {
   private protocolNoticeShown = false;
 
   async onload(): Promise<void> {
+    setLocale(detectLocale(moment.locale()));
     const data = (await this.loadData()) as Partial<PersistedData> | null;
     this.settings = { ...DEFAULT_SETTINGS, ...(data?.settings ?? {}) };
     this.lastSeq = typeof data?.lastSeq === 'number' ? data.lastSeq : 0;
@@ -106,17 +108,17 @@ export default class VaultChangeFeedPlugin extends Plugin {
     this.addSettingTab(new VaultChangeFeedSettingTab(this.app, this));
     this.addCommand({
       id: 'copy-unread-for-ai',
-      name: 'Copy unread changes for AI',
+      name: t('cmdCopyUnread'),
       callback: () => void this.copyUnread(),
     });
     this.addCommand({
       id: 'install-ai-protocol',
-      name: 'Install AI protocol for agents',
+      name: t('cmdInstallProtocol'),
       callback: () => void this.installProtocol(),
     });
     this.addCommand({
       id: 'remove-ai-protocol',
-      name: 'Remove AI protocol from agent files',
+      name: t('cmdRemoveProtocol'),
       callback: () => void this.removeProtocol(),
     });
 
@@ -149,7 +151,7 @@ export default class VaultChangeFeedPlugin extends Plugin {
         oldBaseline = parseBaseline(await this.io.readBinary(BASELINE_FILE));
       } catch {
         oldBaseline = null;
-        new Notice('vault-change-feed: baseline corrupted, rebuilding');
+        new Notice(t('noticeBaselineCorrupted'));
       }
     }
 
@@ -198,20 +200,14 @@ export default class VaultChangeFeedPlugin extends Plugin {
           }
           if (installed.length > 0) {
             this.lastProtocolVersion = this.manifest.version;
-            new Notice(
-              `vault-change-feed: AI protocol auto-installed into ${installed.join(', ')} (manage in settings or commands)`,
-              10000,
-            );
+            new Notice(t('noticeAutoInstalled', { files: installed.join(', ') }), 10000);
           }
         } catch (err) {
-          new Notice('vault-change-feed: protocol auto-install failed, see console');
+          new Notice(t('noticeAutoInstallFailed'));
           console.error('vault-change-feed auto-install failed', err);
         }
       } else if (!(await this.hasAnyProtocolBlock([...PROTOCOL_FILES]))) {
-        new Notice(
-          'vault-change-feed: run command "Install AI protocol for agents" to let AI agents discover the change feed',
-          10000,
-        );
+        new Notice(t('noticeFirstRunGuide'), 10000);
       }
       this.protocolNoticeShown = true;
       await this.saveData(this.persistedData());
@@ -274,13 +270,13 @@ export default class VaultChangeFeedPlugin extends Plugin {
       await this.saveData(this.persistedData());
       new Notice(
         written.length > 0
-          ? `vault-change-feed: AI protocol installed into ${written.join(', ')}`
+          ? t('noticeInstalled', { files: written.join(', ') })
           : onlyExisting
-            ? 'vault-change-feed: protocol block already up to date'
-            : 'vault-change-feed: no target enabled (all protocol targets off in settings)',
+            ? t('noticeUpToDate')
+            : t('noticeNoTarget'),
       );
     } catch (err) {
-      new Notice('vault-change-feed: protocol command failed, see console');
+      new Notice(t('noticeProtocolFailed'));
       console.error('vault-change-feed installProtocol failed', err);
     }
   }
@@ -295,7 +291,7 @@ export default class VaultChangeFeedPlugin extends Plugin {
         const rest = removeBlock(content);
         if (rest.trim().length === 0) {
           await this.app.vault.adapter.remove(path);
-          removed.push(`${path} (file deleted)`);
+          removed.push(t('fileDeleted', { path }));
         } else {
           await this.app.vault.adapter.write(path, rest);
           removed.push(path);
@@ -303,11 +299,11 @@ export default class VaultChangeFeedPlugin extends Plugin {
       }
       new Notice(
         removed.length > 0
-          ? `vault-change-feed: AI protocol removed from ${removed.join(', ')}`
-          : 'vault-change-feed: no AI protocol block found in AGENTS.md / CLAUDE.md / GEMINI.md',
+          ? t('noticeRemoved', { files: removed.join(', ') })
+          : t('noticeNoBlockFound'),
       );
     } catch (err) {
-      new Notice('vault-change-feed: protocol command failed, see console');
+      new Notice(t('noticeProtocolFailed'));
       console.error('vault-change-feed removeProtocol failed', err);
     }
   }
@@ -427,7 +423,7 @@ export default class VaultChangeFeedPlugin extends Plugin {
     } catch (err) {
       // 失败重入队列，下轮重试
       for (const e of events) this.feed.pushLoaded(e);
-      new Notice('vault-change-feed: failed to write changelog, will retry');
+      new Notice(t('noticeFlushFailed'));
       console.error('vault-change-feed flush failed', err);
     }
   }
@@ -458,7 +454,7 @@ export default class VaultChangeFeedPlugin extends Plugin {
     const body = res.events.length > 0 ? formatEvents(res.events) : '(no changes)';
     await navigator.clipboard.writeText(header + body);
     await markRead(this.io, this.feedPaths(), 'manual', res.latestSeq);
-    new Notice(`vault-change-feed: ${res.events.length} change(s) copied`);
+    new Notice(t('noticeCopied', { count: res.events.length }));
   }
 
   onunload(): void {
@@ -494,8 +490,8 @@ class VaultChangeFeedSettingTab extends PluginSettingTab {
     const s = this.plugin.settings;
 
     new Setting(containerEl)
-      .setName('Tracked text extensions')
-      .setDesc('Comma-separated, without dots. Changes to these files get diff stats.')
+      .setName(t('sTrackedExtsName'))
+      .setDesc(t('sTrackedExtsDesc'))
       .addText(t =>
         t.setValue(s.trackedExtensions).onChange(async v => {
           s.trackedExtensions = v;
@@ -504,8 +500,8 @@ class VaultChangeFeedSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName('Exclude globs')
-      .setDesc('One per line. The vault config folder is always excluded.')
+      .setName(t('sExcludeGlobsName'))
+      .setDesc(t('sExcludeGlobsDesc'))
       .addTextArea(t =>
         t.setValue(s.excludeGlobs).onChange(async v => {
           s.excludeGlobs = v;
@@ -514,8 +510,8 @@ class VaultChangeFeedSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName('Large file threshold (KB)')
-      .setDesc('Text files larger than this skip diff stats.')
+      .setName(t('sLargeFileName'))
+      .setDesc(t('sLargeFileDesc'))
       .addText(t =>
         t.setValue(String(s.largeFileKb)).onChange(async v => {
           const n = Number(v);
@@ -527,8 +523,8 @@ class VaultChangeFeedSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName('Retention days')
-      .setDesc('Log entries older than this are truncated.')
+      .setName(t('sRetentionDaysName'))
+      .setDesc(t('sRetentionDaysDesc'))
       .addText(t =>
         t.setValue(String(s.retentionDays)).onChange(async v => {
           const n = Number(v);
@@ -540,8 +536,8 @@ class VaultChangeFeedSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName('Retention max entries')
-      .setDesc('Log is truncated to this many entries when exceeded — whichever limit hits first.')
+      .setName(t('sRetentionMaxName'))
+      .setDesc(t('sRetentionMaxDesc'))
       .addText(t =>
         t.setValue(String(s.retentionMaxEntries)).onChange(async v => {
           const n = Number(v);
@@ -553,8 +549,8 @@ class VaultChangeFeedSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName('Baseline flush interval (s)')
-      .setDesc('How often the baseline snapshot is persisted. Takes effect after reload.')
+      .setName(t('sFlushIntervalName'))
+      .setDesc(t('sFlushIntervalDesc'))
       .addText(t =>
         t.setValue(String(s.flushIntervalSec)).onChange(async v => {
           const n = Number(v);
@@ -566,8 +562,8 @@ class VaultChangeFeedSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName('Auto-install AI protocol on first run')
-      .setDesc('Write the protocol block into AGENTS.md / CLAUDE.md / GEMINI.md automatically when the plugin is first enabled.')
+      .setName(t('sAutoInstallName'))
+      .setDesc(t('sAutoInstallDesc'))
       .addToggle(t =>
         t.setValue(s.autoInstallProtocol).onChange(async v => {
           s.autoInstallProtocol = v;
@@ -576,8 +572,8 @@ class VaultChangeFeedSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName('Sync AGENTS.md')
-      .setDesc('Install protocol block into AGENTS.md (read by most AI agents)')
+      .setName(t('sSyncAgentsName'))
+      .setDesc(t('sSyncAgentsDesc'))
       .addToggle(t =>
         t.setValue(s.syncAgentsMd).onChange(async v => {
           s.syncAgentsMd = v;
@@ -586,8 +582,8 @@ class VaultChangeFeedSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName('Sync CLAUDE.md')
-      .setDesc('Install protocol block into CLAUDE.md (read by Claude Code)')
+      .setName(t('sSyncClaudeName'))
+      .setDesc(t('sSyncClaudeDesc'))
       .addToggle(t =>
         t.setValue(s.syncClaudeMd).onChange(async v => {
           s.syncClaudeMd = v;
@@ -596,8 +592,8 @@ class VaultChangeFeedSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName('Sync GEMINI.md')
-      .setDesc('Install protocol block into GEMINI.md (read by Gemini CLI)')
+      .setName(t('sSyncGeminiName'))
+      .setDesc(t('sSyncGeminiDesc'))
       .addToggle(t =>
         t.setValue(s.syncGeminiMd).onChange(async v => {
           s.syncGeminiMd = v;
@@ -606,8 +602,8 @@ class VaultChangeFeedSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName('Auto-sync protocol block')
-      .setDesc('Refresh the installed protocol block after plugin updates')
+      .setName(t('sAutoSyncName'))
+      .setDesc(t('sAutoSyncDesc'))
       .addToggle(t =>
         t.setValue(s.autoSyncProtocol).onChange(async v => {
           s.autoSyncProtocol = v;
