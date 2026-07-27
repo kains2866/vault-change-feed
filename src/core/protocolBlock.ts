@@ -24,16 +24,21 @@ export function upsertBlock(content: string | null, block: string): string {
   return kept + '\n\n' + block + '\n';
 }
 
-/** 删除标记块；块前紧邻的一个空行一并去掉；无标记 → 原样返回 */
+/** 删除标记块；块前紧邻的一个空行一并去掉；无标记 → 原样返回。换行 LF/CRLF 均兼容 */
 export function removeBlock(content: string): string {
   if (!hasBlock(content)) return content;
   let start = content.indexOf(BLOCK_START);
   let end = content.indexOf(BLOCK_END, start + BLOCK_START.length) + BLOCK_END.length;
-  // 块尾标记行的换行一并删除
-  if (content[end] === '\n') end++;
-  // 块前紧邻一个空行（上一行的换行 + 空行自身的换行）则去掉空行那一个
-  if (start > 0 && content[start - 1] === '\n' && (start === 1 || content[start - 2] === '\n')) {
-    start--;
+  // 块尾标记行的换行一并删除（CRLF 两个字符，LF 一个）
+  if (content.slice(end, end + 2) === '\r\n') end += 2;
+  else if (content[end] === '\n') end++;
+  // 块前紧邻一个空行（上一行的换行 + 空行自身的换行）则去掉空行那一个；CRLF 空行是两个字符
+  if (start > 0 && content[start - 1] === '\n') {
+    if (start === 1 || content[start - 2] === '\n') {
+      start--;
+    } else if (content[start - 2] === '\r' && (start === 2 || content[start - 3] === '\n')) {
+      start -= 2;
+    }
   }
   return content.slice(0, start) + content.slice(end);
 }

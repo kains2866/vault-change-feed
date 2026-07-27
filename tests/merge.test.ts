@@ -132,4 +132,44 @@ describe('mergeEvents', () => {
     mergeEvents(input);
     expect(input).toEqual(snapshot);
   });
+
+  it('rename→delete 同组 → 一条 delete，path 为首个 rename 的 oldPath，stat 取 delete 自身，不带 oldPath', () => {
+    const out = mergeEvents([
+      ev({ seq: 1, path: 'B.md', op: 'rename', oldPath: 'A.md', stat: { added: 0, removed: 0 } }),
+      ev({ seq: 2, path: 'B.md', op: 'delete', stat: { added: 0, removed: 7 } }),
+    ]);
+    expect(out).toEqual([
+      { seq: 2, ts: 1002, op: 'delete', path: 'A.md', stat: { added: 0, removed: 7 }, source: 'live' },
+    ]);
+  });
+
+  it('delete+rename 同组（非结尾 delete 情形）→ 不合并，原样按 seq 输出两条', () => {
+    const d = ev({ seq: 1, path: 'A.md', op: 'delete', stat: { added: 0, removed: 5 } });
+    const r = ev({ seq: 2, path: 'A.md', op: 'rename', oldPath: 'X.md', stat: { added: 0, removed: 0 } });
+    const out = mergeEvents([d, r]);
+    expect(out).toEqual([d, r]);
+  });
+
+  it('混合组：create A + modify A 组正常合并为 create；rename A→B + delete B 组输出 delete A', () => {
+    const out = mergeEvents([
+      ev({ seq: 1, path: 'A.md', op: 'create', stat: { added: 10, removed: 0 } }),
+      ev({ seq: 2, path: 'A.md', op: 'modify', stat: { added: 3, removed: 1 } }),
+      ev({ seq: 3, path: 'B.md', op: 'rename', oldPath: 'A.md', stat: { added: 0, removed: 0 } }),
+      ev({ seq: 4, path: 'B.md', op: 'delete', stat: { added: 0, removed: 12 } }),
+    ]);
+    expect(out).toEqual([
+      { seq: 2, ts: 1002, op: 'create', path: 'A.md', stat: { added: 13, removed: 1 }, source: 'live' },
+      { seq: 4, ts: 1004, op: 'delete', path: 'A.md', stat: { added: 0, removed: 12 }, source: 'live' },
+    ]);
+  });
+
+  it('输入未按 seq 排序 → 先按 seq 排序再合并', () => {
+    const out = mergeEvents([
+      ev({ seq: 6, path: 'u.md', op: 'modify', stat: { added: 2, removed: 0 } }),
+      ev({ seq: 5, path: 'u.md', op: 'create', stat: { added: 9, removed: 0 } }),
+    ]);
+    expect(out).toEqual([
+      { seq: 6, ts: 1006, op: 'create', path: 'u.md', stat: { added: 11, removed: 0 }, source: 'live' },
+    ]);
+  });
 });

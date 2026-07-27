@@ -192,10 +192,10 @@ export default class VaultChangeFeedPlugin extends Plugin {
       await this.saveData(this.persistedData());
     }
 
-    // 插件升级后自动刷新已安装的协议块；未安装过则不写入，尊重未授权状态
+    // 插件升级后自动刷新已安装的协议块；onlyExisting：只刷新已有块的文件，不创建新文件
     if (this.settings.autoSyncProtocol && this.lastProtocolVersion !== this.manifest.version) {
       if (await this.hasAnyProtocolBlock(this.protocolTargets())) {
-        await this.installProtocol();
+        await this.installProtocol(true);
       }
     }
   }
@@ -223,44 +223,60 @@ export default class VaultChangeFeedPlugin extends Plugin {
     return false;
   }
 
-  /** 把协议块 upsert 到每个启用的目标文件（幂等） */
-  private async installProtocol(): Promise<void> {
-    const block = renderProtocolBlock();
-    const written: string[] = [];
-    for (const path of this.protocolTargets()) {
-      const content = await this.readVaultFileOrNull(path);
-      await this.app.vault.adapter.write(path, upsertBlock(content, block));
-      written.push(path);
+  /**
+   * 把协议块 upsert 到每个启用的目标文件（幂等）。
+   * onlyExisting 为 true 时只刷新 hasBlock 已为真的文件（自动同步路径用），其余跳过。
+   */
+  private async installProtocol(onlyExisting = false): Promise<void> {
+    try {
+      const block = renderProtocolBlock();
+      const written: string[] = [];
+      for (const path of this.protocolTargets()) {
+        const content = await this.readVaultFileOrNull(path);
+        if (onlyExisting && (content === null || !hasBlock(content))) continue;
+        await this.app.vault.adapter.write(path, upsertBlock(content, block));
+        written.push(path);
+      }
+      this.lastProtocolVersion = this.manifest.version;
+      await this.saveData(this.persistedData());
+      new Notice(
+        written.length > 0
+          ? `vault-change-feed: AI protocol installed into ${written.join(', ')}`
+          : onlyExisting
+            ? 'vault-change-feed: protocol block already up to date'
+            : 'vault-change-feed: no target enabled (AGENTS.md / CLAUDE.md both off in settings)',
+      );
+    } catch (err) {
+      new Notice('vault-change-feed: protocol command failed, see console');
+      console.error('vault-change-feed installProtocol failed', err);
     }
-    this.lastProtocolVersion = this.manifest.version;
-    await this.saveData(this.persistedData());
-    new Notice(
-      written.length > 0
-        ? `vault-change-feed: AI protocol installed into ${written.join(', ')}`
-        : 'vault-change-feed: no target enabled (AGENTS.md / CLAUDE.md both off in settings)',
-    );
   }
 
   /** 从两个公约文件移除协议块（无论启用与否，移除要彻底）；文件只剩块则删文件 */
   private async removeProtocol(): Promise<void> {
-    const removed: string[] = [];
-    for (const path of PROTOCOL_FILES) {
-      const content = await this.readVaultFileOrNull(path);
-      if (content === null || !hasBlock(content)) continue;
-      const rest = removeBlock(content);
-      if (rest.trim().length === 0) {
-        await this.app.vault.adapter.remove(path);
-        removed.push(`${path} (file deleted)`);
-      } else {
-        await this.app.vault.adapter.write(path, rest);
-        removed.push(path);
+    try {
+      const removed: string[] = [];
+      for (const path of PROTOCOL_FILES) {
+        const content = await this.readVaultFileOrNull(path);
+        if (content === null || !hasBlock(content)) continue;
+        const rest = removeBlock(content);
+        if (rest.trim().length === 0) {
+          await this.app.vault.adapter.remove(path);
+          removed.push(`${path} (file deleted)`);
+        } else {
+          await this.app.vault.adapter.write(path, rest);
+          removed.push(path);
+        }
       }
+      new Notice(
+        removed.length > 0
+          ? `vault-change-feed: AI protocol removed from ${removed.join(', ')}`
+          : 'vault-change-feed: no AI protocol block found in AGENTS.md / CLAUDE.md',
+      );
+    } catch (err) {
+      new Notice('vault-change-feed: protocol command failed, see console');
+      console.error('vault-change-feed removeProtocol failed', err);
     }
-    new Notice(
-      removed.length > 0
-        ? `vault-change-feed: AI protocol removed from ${removed.join(', ')}`
-        : 'vault-change-feed: no AI protocol block found in AGENTS.md / CLAUDE.md',
-    );
   }
 
   /** 扫描 vault 生成快照；读不到的文件（iCloud 占位等）跳过，下轮对账再试 */
@@ -355,7 +371,8 @@ export default class VaultChangeFeedPlugin extends Plugin {
     const entry = this.baseline.get(oldPath);
     if (entry) {
       this.baseline.delete(oldPath);
-      this.baseline.set(f.path, entry);
+      // 新路径被排除时不移动基线条目，否则下次对账会把排除路径当失踪文件产生幽灵 delete
+      if (!newExcluded) this.baseline.set(f.path, entry);
       this.baselineDirty = true;
     }
     if (oldExcluded) {

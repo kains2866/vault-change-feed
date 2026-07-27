@@ -32,7 +32,7 @@ AI 不知道你背着它改了哪些笔记。全库扫描太贵；不问又会�
 其他 AI agent（Kimi Code / Claude Code / Codex 等）安装插件后默认不知道 feed 存在。运行命令 `Install AI protocol for agents`，插件会把一段读取协议以标记块（`<!-- vault-change-feed:start/end -->`）写入 vault 根目录的 `AGENTS.md` 与 `CLAUDE.md` —— 这两个文件是各 AI 工具约定俗成的发现点。
 
 - 幂等：重复运行只更新标记块内部，块外你自己的内容逐字保留；没有块则追加到文末并空一行分隔
-- 随版本自动刷新：插件升级后若协议文本有更新，会自动刷新已安装的块（没安装过不会替你创建；可在设置里关闭 Auto-sync）
+- 随版本自动刷新：插件升级后若协议文本有更新，会自动刷新已安装的块；自动同步只刷新已安装块的文件，不会替你创建新文件（可在设置里关闭 Auto-sync）
 - 命令 `Remove AI protocol from agent files` 彻底移除两个文件里的块；若文件只剩协议块则直接删除该文件
 - 写入目标可在设置中分别开关（Sync AGENTS.md / Sync CLAUDE.md）
 - 没有文件访问权的 AI（纯网页对话等）仍走 `Copy unread changes for AI` 命令，把未读变更粘给它
@@ -57,10 +57,11 @@ const { events, stale, latestSeq } = await api.getChanges('my-plugin');
 await api.markRead('my-plugin', latestSeq);
 ```
 
-JS API 的 `getChanges` 默认把同一文件的未读事件合并为一条（`api.getChanges(name, { merge: false })` 可得原始流）。直接读 `changelog.jsonl` 的外部 agent 看到的是原始事件流，如需合并可自行按以下规则实现：
+JS API 的 `getChanges` 默认把同一文件的未读事件合并为一条（`api.getChanges(name, { merge: false })` 可得原始流；不可无损合并的组除外，见下）。直接读 `changelog.jsonl` 的外部 agent 看到的是原始事件流，如需合并可自行按以下规则实现：
 
-- 按 `path` 分组（`resync` 不合并，原样保留）；每组产出一条：`seq`/`ts` 取组内最大，`source` 取组内最后一条
-- 窗口内 create 了又 delete → 整组丢弃；结尾是 delete → `delete`（stat 取最后一条 delete 自身）
+- 先按 `seq` 排序（容忍日志乱序），再按 `path` 分组（`resync` 不合并，原样保留）；合并产出的 `seq`/`ts` 取组内最大，`source` 取组内最后一条
+- 窗口内 create 了又 delete → 整组丢弃；结尾是 delete 且组内含 rename → `delete`，path 取首个 rename 的 `oldPath`（不带 oldPath 字段，stat 取 delete 自身）；结尾是 delete → `delete`（stat 取最后一条 delete 自身）
+- 组内 delete 与 rename 交织且不属上一条 → 不合并，组内事件原样输出（任何合并都会丢某个路径的命运）
 - 删了又建 → `modify`（stat 为 null）；开头是 create → `create`；含 rename → `rename`（保留首个 rename 的 oldPath）；其余 → `modify`
 - 后三种的 stat：组内全部非 null 则逐项累加，否则 null；输出按合并后 seq 升序
 
@@ -77,6 +78,9 @@ JS API 的 `getChanges` 默认把同一文件的未读事件合并为一条（`a
 | Large file threshold | 1024 KB | 超过则 stat 为 null |
 | Retention days / max entries | 90 / 50000 | 日志轮转，先到先截 |
 | Baseline flush interval | 300 s | 基线持久化周期 |
+| Sync AGENTS.md | 开 | 把协议块安装到 vault 根目录 AGENTS.md |
+| Sync CLAUDE.md | 开 | 把协议块安装到 vault 根目录 CLAUDE.md |
+| Auto-sync protocol block | 开 | 插件升级后自动刷新已安装的协议块 |
 
 ## 隐私
 

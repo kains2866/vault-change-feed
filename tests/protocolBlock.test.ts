@@ -78,4 +78,13 @@ describe('removeBlock', () => {
     const content = '# AGENTS\n\nuser content\n';
     expect(removeBlock(content)).toBe(content);
   });
+
+  it('CRLF：块前后 \\r\\n 正确处理，不留多余空行', () => {
+    const content = 'before\r\n\r\n' + BLOCK + '\r\nafter';
+    expect(removeBlock(content)).toBe('before\r\nafter');
+  });
+
+  it('CRLF：块在文末 → 前文保留，不残留空行', () => {
+    expect(removeBlock('before\r\n\r\n' + BLOCK + '\r\n')).toBe('before\r\n');
+  });
 });
