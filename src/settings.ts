@@ -9,6 +9,12 @@ export interface VaultChangeFeedSettings {
   retentionMaxEntries: number;
   /** 基线持久化周期（秒） */
   flushIntervalSec: number;
+  /** 把协议块安装到 vault 根目录 AGENTS.md */
+  syncAgentsMd: boolean;
+  /** 把协议块安装到 vault 根目录 CLAUDE.md */
+  syncClaudeMd: boolean;
+  /** 插件版本变化后自动刷新已安装的协议块 */
+  autoSyncProtocol: boolean;
 }
 
 export const DEFAULT_SETTINGS: VaultChangeFeedSettings = {
@@ -18,6 +24,9 @@ export const DEFAULT_SETTINGS: VaultChangeFeedSettings = {
   retentionDays: 90,
   retentionMaxEntries: 50000,
   flushIntervalSec: 300,
+  syncAgentsMd: true,
+  syncClaudeMd: true,
+  autoSyncProtocol: true,
 };
 
 export function parseExtensions(s: string): string[] {

@@ -9,6 +9,8 @@ import { isExcluded, isTextFile, ExcludeOptions } from './core/exclude';
 import { reconcile, FileSnapshot } from './core/reconcile';
 import { readLog, appendEvents, rotateIfNeeded } from './core/logStore';
 import { EventFeed } from './core/feed';
+import { hasBlock, upsertBlock, removeBlock } from './core/protocolBlock';
+import { renderProtocolBlock } from './core/protocolTemplate';
 import { getChanges, markRead, formatEvents, FeedPaths, GetChangesOptions } from './protocol';
 import {
   VaultChangeFeedSettings,
@@ -22,6 +24,8 @@ const CURSORS_FILE = 'cursors.json';
 const BASELINE_FILE = 'baseline.gz';
 const EVENT_FLUSH_MS = 3000;
 const ROTATE_MS = 3600_000;
+/** AI agent 约定俗成的发现点（vault 根目录） */
+const PROTOCOL_FILES = ['AGENTS.md', 'CLAUDE.md'] as const;
 
 class NodeFileIO implements FileIO {
   constructor(private baseDir: string) {}
@@ -62,6 +66,10 @@ class NodeFileIO implements FileIO {
 interface PersistedData {
   settings: VaultChangeFeedSettings;
   lastSeq: number;
+  /** 上次写入协议块时的插件版本（未安装过为 undefined） */
+  lastProtocolVersion?: string;
+  /** 首次运行引导 Notice 是否已展示过 */
+  protocolNoticeShown?: boolean;
 }
 
 export default class VaultChangeFeedPlugin extends Plugin {
@@ -77,11 +85,15 @@ export default class VaultChangeFeedPlugin extends Plugin {
   private baseline: Baseline = new Map();
   private baselineDirty = false;
   private lastSeq = 0;
+  private lastProtocolVersion?: string;
+  private protocolNoticeShown = false;
 
   async onload(): Promise<void> {
     const data = (await this.loadData()) as Partial<PersistedData> | null;
     this.settings = { ...DEFAULT_SETTINGS, ...(data?.settings ?? {}) };
     this.lastSeq = typeof data?.lastSeq === 'number' ? data.lastSeq : 0;
+    if (typeof data?.lastProtocolVersion === 'string') this.lastProtocolVersion = data.lastProtocolVersion;
+    this.protocolNoticeShown = data?.protocolNoticeShown === true;
 
     const basePath = (this.app.vault.adapter as unknown as { getBasePath(): string }).getBasePath();
     const dataDir = nodePath.join(basePath, this.app.vault.configDir, 'plugins', this.manifest.id);
@@ -93,6 +105,16 @@ export default class VaultChangeFeedPlugin extends Plugin {
       id: 'copy-unread-for-ai',
       name: 'Copy unread changes for AI',
       callback: () => void this.copyUnread(),
+    });
+    this.addCommand({
+      id: 'install-ai-protocol',
+      name: 'Install AI protocol for agents',
+      callback: () => void this.installProtocol(),
+    });
+    this.addCommand({
+      id: 'remove-ai-protocol',
+      name: 'Remove AI protocol from agent files',
+      callback: () => void this.removeProtocol(),
     });
 
     // vault 索引完成后再初始化，避免启动期 create 事件风暴
@@ -157,6 +179,88 @@ export default class VaultChangeFeedPlugin extends Plugin {
       ),
     );
     this.registerInterval(window.setInterval(() => void this.rotate(), ROTATE_MS));
+
+    // 首次运行引导：两个公约文件都没装过协议块才提示；无论是否提示只检查一次
+    if (!this.protocolNoticeShown) {
+      if (!(await this.hasAnyProtocolBlock([...PROTOCOL_FILES]))) {
+        new Notice(
+          'vault-change-feed: run command "Install AI protocol for agents" to let AI agents discover the change feed',
+          10000,
+        );
+      }
+      this.protocolNoticeShown = true;
+      await this.saveData(this.persistedData());
+    }
+
+    // 插件升级后自动刷新已安装的协议块；未安装过则不写入，尊重未授权状态
+    if (this.settings.autoSyncProtocol && this.lastProtocolVersion !== this.manifest.version) {
+      if (await this.hasAnyProtocolBlock(this.protocolTargets())) {
+        await this.installProtocol();
+      }
+    }
+  }
+
+  /** 启用的协议块目标文件（vault 根目录） */
+  private protocolTargets(): string[] {
+    const targets: string[] = [];
+    if (this.settings.syncAgentsMd) targets.push('AGENTS.md');
+    if (this.settings.syncClaudeMd) targets.push('CLAUDE.md');
+    return targets;
+  }
+
+  /** 读 vault 根文件；不存在返回 null。必须走 adapter 让 Obsidian 感知变更 */
+  private async readVaultFileOrNull(path: string): Promise<string | null> {
+    const adapter = this.app.vault.adapter;
+    if (!(await adapter.exists(path))) return null;
+    return adapter.read(path);
+  }
+
+  private async hasAnyProtocolBlock(paths: string[]): Promise<boolean> {
+    for (const p of paths) {
+      const content = await this.readVaultFileOrNull(p);
+      if (content !== null && hasBlock(content)) return true;
+    }
+    return false;
+  }
+
+  /** 把协议块 upsert 到每个启用的目标文件（幂等） */
+  private async installProtocol(): Promise<void> {
+    const block = renderProtocolBlock();
+    const written: string[] = [];
+    for (const path of this.protocolTargets()) {
+      const content = await this.readVaultFileOrNull(path);
+      await this.app.vault.adapter.write(path, upsertBlock(content, block));
+      written.push(path);
+    }
+    this.lastProtocolVersion = this.manifest.version;
+    await this.saveData(this.persistedData());
+    new Notice(
+      written.length > 0
+        ? `vault-change-feed: AI protocol installed into ${written.join(', ')}`
+        : 'vault-change-feed: no target enabled (AGENTS.md / CLAUDE.md both off in settings)',
+    );
+  }
+
+  /** 从两个公约文件移除协议块（无论启用与否，移除要彻底）；文件只剩块则删文件 */
+  private async removeProtocol(): Promise<void> {
+    const removed: string[] = [];
+    for (const path of PROTOCOL_FILES) {
+      const content = await this.readVaultFileOrNull(path);
+      if (content === null || !hasBlock(content)) continue;
+      const rest = removeBlock(content);
+      if (rest.trim().length === 0) {
+        await this.app.vault.adapter.remove(path);
+        removed.push(`${path} (file deleted)`);
+      } else {
+        await this.app.vault.adapter.write(path, rest);
+        removed.push(path);
+      }
+    }
+    new Notice(
+      removed.length > 0
+        ? `vault-change-feed: AI protocol removed from ${removed.join(', ')}`
+        : 'vault-change-feed: no AI protocol block found in AGENTS.md / CLAUDE.md',
+    );
   }
 
   /** 扫描 vault 生成快照；读不到的文件（iCloud 占位等）跳过，下轮对账再试 */
@@ -269,7 +373,7 @@ export default class VaultChangeFeedPlugin extends Plugin {
     try {
       await appendEvents(this.io, LOG_FILE, events);
       this.lastSeq = Math.max(this.lastSeq, events[events.length - 1].seq);
-      await this.saveData({ settings: this.settings, lastSeq: this.lastSeq } as PersistedData);
+      await this.saveData(this.persistedData());
     } catch (err) {
       // 失败重入队列，下轮重试
       for (const e of events) this.feed.pushLoaded(e);
@@ -313,8 +417,17 @@ export default class VaultChangeFeedPlugin extends Plugin {
     if (this.baselineDirty) await this.saveBaseline();
   }
 
+  private persistedData(): PersistedData {
+    return {
+      settings: this.settings,
+      lastSeq: this.lastSeq,
+      lastProtocolVersion: this.lastProtocolVersion,
+      protocolNoticeShown: this.protocolNoticeShown,
+    };
+  }
+
   async saveSettings(): Promise<void> {
-    await this.saveData({ settings: this.settings, lastSeq: this.lastSeq } as PersistedData);
+    await this.saveData(this.persistedData());
   }
 }
 
@@ -397,6 +510,36 @@ class VaultChangeFeedSettingTab extends PluginSettingTab {
             s.flushIntervalSec = n;
             await this.plugin.saveSettings();
           }
+        }),
+      );
+
+    new Setting(containerEl)
+      .setName('Sync AGENTS.md')
+      .setDesc('Install protocol block into AGENTS.md (read by most AI agents)')
+      .addToggle(t =>
+        t.setValue(s.syncAgentsMd).onChange(async v => {
+          s.syncAgentsMd = v;
+          await this.plugin.saveSettings();
+        }),
+      );
+
+    new Setting(containerEl)
+      .setName('Sync CLAUDE.md')
+      .setDesc('Install protocol block into CLAUDE.md (read by Claude Code)')
+      .addToggle(t =>
+        t.setValue(s.syncClaudeMd).onChange(async v => {
+          s.syncClaudeMd = v;
+          await this.plugin.saveSettings();
+        }),
+      );
+
+    new Setting(containerEl)
+      .setName('Auto-sync protocol block')
+      .setDesc('Refresh the installed protocol block after plugin updates')
+      .addToggle(t =>
+        t.setValue(s.autoSyncProtocol).onChange(async v => {
+          s.autoSyncProtocol = v;
+          await this.plugin.saveSettings();
         }),
       );
   }

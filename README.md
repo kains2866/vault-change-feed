@@ -27,6 +27,16 @@ AI 不知道你背着它改了哪些笔记。全库扫描太贵；不问又会�
 - `stat`：`{added, removed}` 增删行数；`null` 表示「变了但幅度未知，请打开看」（二进制、超大文件）
 - `source`：`live` / `reconcile`（启动补记）/ `system`
 
+## 让 AI 发现 feed
+
+其他 AI agent（Kimi Code / Claude Code / Codex 等）安装插件后默认不知道 feed 存在。运行命令 `Install AI protocol for agents`，插件会把一段读取协议以标记块（`<!-- vault-change-feed:start/end -->`）写入 vault 根目录的 `AGENTS.md` 与 `CLAUDE.md` —— 这两个文件是各 AI 工具约定俗成的发现点。
+
+- 幂等：重复运行只更新标记块内部，块外你自己的内容逐字保留；没有块则追加到文末并空一行分隔
+- 随版本自动刷新：插件升级后若协议文本有更新，会自动刷新已安装的块（没安装过不会替你创建；可在设置里关闭 Auto-sync）
+- 命令 `Remove AI protocol from agent files` 彻底移除两个文件里的块；若文件只剩协议块则直接删除该文件
+- 写入目标可在设置中分别开关（Sync AGENTS.md / Sync CLAUDE.md）
+- 没有文件访问权的 AI（纯网页对话等）仍走 `Copy unread changes for AI` 命令，把未读变更粘给它
+
 ## 给 AI agent 的协议（README 即接口文档）
 
 This vault is tracked by the **vault-change-feed** Obsidian plugin. Before editing notes, catch up on what the user changed since your last visit:
