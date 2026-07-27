@@ -38,6 +38,27 @@ AI 不知道你背着它改了哪些笔记。全库扫描太贵；不问又会�
 - 写入目标可在设置中分别开关（Sync AGENTS.md / Sync CLAUDE.md）
 - 没有文件访问权的 AI（纯网页对话等）仍走 `Copy unread changes for AI` 命令，把未读变更粘给它
 
+### 可选：SessionStart hook（免"自觉"，强制注入）
+
+协议块依赖 AI 自觉读取；`extras/vault-feed-hook.mjs` 提供更强保证——挂在 agent 的 SessionStart hook 上，会话启动时自动把未读变更（合并后）注入上下文并推进游标。脚本从会话 cwd 向上查找受跟踪的 vault，目录不在 vault 内或无未读时完全静默。
+
+Kimi Code（`~/.kimi-code/config.toml`）：
+
+```toml
+[[hooks]]
+event = "SessionStart"
+command = "node /path/to/extras/vault-feed-hook.mjs --reader=kimi-code --format=kimi"
+timeout = 10
+```
+
+Claude Code（`~/.claude/settings.json` 的 `hooks.SessionStart`）：
+
+```json
+{ "type": "command", "command": "node /path/to/extras/vault-feed-hook.mjs --reader=claude-code --format=claude", "timeout": 10 }
+```
+
+`--reader` 为该 agent 的固定游标名；建议用 `node` 的绝对路径。
+
 ## 给 AI agent 的协议（README 即接口文档）
 
 This vault is tracked by the **vault-change-feed** Obsidian plugin. Before editing notes, catch up on what the user changed since your last visit:
