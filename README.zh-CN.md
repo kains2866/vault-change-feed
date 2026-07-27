@@ -8,6 +8,14 @@
 
 [English README](https://github.com/kains2866/vault-change-feed/blob/main/README.md) · [Obsidian 社区插件页](https://community.obsidian.md/plugins/vault-change-feed)
 
+## Support / 支持
+
+If this plugin saves you time, you can buy me a coffee — it keeps the development going.
+如果这个插件帮你省了时间，可以请我喝杯咖啡 ☕
+
+- **International**: <a href="https://buymeacoffee.com/kains3772d"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" height="48"></a>
+- **中国大陆**: [爱发电](https://ifdian.net/a/kains2866)（微信 / 支付宝直达 · WeChat / Alipay）
+
 ---
 
 ## 安装
@@ -134,10 +142,3 @@ npm test        # vitest
 
 桌面端与移动端均可使用（文件操作全部走 Obsidian vault API）。
 
-## Support / 支持
-
-If this plugin saves you time, you can buy me a coffee — it keeps the development going.
-如果这个插件帮你省了时间，可以请我喝杯咖啡 ☕
-
-- **International**: <a href="https://buymeacoffee.com/kains3772d"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" height="48"></a>
-- **中国大陆**: [爱发电](https://ifdian.net/a/kains2866)（微信 / 支付宝直达 · WeChat / Alipay）
