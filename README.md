@@ -145,6 +145,12 @@ npm test        # vitest
 
 Works on desktop and mobile (all file operations go through the Obsidian vault API).
 
+## Support
+
+If this plugin saves you time, you can buy me a coffee — it keeps the development going.
+
+<a href="https://buymeacoffee.com/kains3772d"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" height="48"></a>
+
 ## License
 
 [MIT](LICENSE) © tiyukains

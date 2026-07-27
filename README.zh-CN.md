@@ -133,3 +133,9 @@ npm test        # vitest
 ```
 
 桌面端与移动端均可使用（文件操作全部走 Obsidian vault API）。
+
+## 支持
+
+如果这个插件帮你省了时间，可以请我喝杯咖啡 ☕
+
+<a href="https://buymeacoffee.com/kains3772d"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" height="48"></a>
