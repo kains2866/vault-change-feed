@@ -17,9 +17,10 @@ function sumStats(group: ChangeEvent[]): LineStat | null {
  * 空数组 = 整组丢弃；多条 = 组内信息不可无损合并，原样输出。
  * 判定顺序与任务规则表一致：
  * 1. 首 create 且尾 delete → 窗口内建了又删，读者从未见过，丢弃
- * 2. 尾 delete 且组内含 rename → delete，path 取首个 rename 的 oldPath
+ * 2. 尾 delete 且组内含 rename 且 delete 只此一条 → delete，path 取首个 rename 的 oldPath
  *    （读者只知道旧名，落在旧名上才读得懂），不带 oldPath 字段，stat 取最后一条 delete 自身
- * 3. 组内同时含 delete 与 rename（非 2 情形）→ 任何合并都会丢某个路径的命运，拒合并，原样输出
+ * 3. 组内同时含 delete 与 rename（非 2 情形，含「delete 早于 rename」的复合组）→
+ *    任何合并都会丢某个路径的命运，拒合并，原样输出
  * 4. 尾 delete → delete（stat 取最后一条 delete 自身，即文件删除时的行数）
  * 5. 组内有 delete 但其后有 create（删了又建，文件仍在）→ modify，stat null
  * 6. 首 create（文件仍在）→ create，stat 累加
@@ -33,8 +34,9 @@ function mergeGroup(group: ChangeEvent[]): ChangeEvent[] {
   if (first.op === 'create' && last.op === 'delete') return [];
 
   const firstRename = group.find(e => e.op === 'rename');
+  const deleteCount = group.reduce((n, e) => n + (e.op === 'delete' ? 1 : 0), 0);
 
-  if (last.op === 'delete' && firstRename) {
+  if (last.op === 'delete' && firstRename && deleteCount === 1) {
     return [
       {
         seq: Math.max(...group.map(e => e.seq)),

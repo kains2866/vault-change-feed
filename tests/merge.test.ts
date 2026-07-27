@@ -172,4 +172,12 @@ describe('mergeEvents', () => {
       { seq: 6, ts: 1006, op: 'create', path: 'u.md', stat: { added: 11, removed: 0 }, source: 'live' },
     ]);
   });
+
+  it('delete 早于 rename 的复合组（delete A, rename X→A, delete A）→ 拒合并，原样输出三条', () => {
+    const d1 = ev({ seq: 1, path: 'A.md', op: 'delete', stat: { added: 0, removed: 5 } });
+    const r = ev({ seq: 2, path: 'A.md', op: 'rename', oldPath: 'X.md', stat: { added: 0, removed: 0 } });
+    const d2 = ev({ seq: 3, path: 'A.md', op: 'delete', stat: { added: 0, removed: 9 } });
+    const out = mergeEvents([d1, r, d2]);
+    expect(out).toEqual([d1, r, d2]);
+  });
 });
