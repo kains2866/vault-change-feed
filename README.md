@@ -2,7 +2,7 @@
 
 Records every change in your Obsidian vault as a machine-readable event feed, with an independent read cursor per reader (AI agent). Before an AI manages your notes, it reads the feed once and knows exactly what you changed since its last visit — no full-vault rescan needed.
 
-[中文文档](README.zh-CN.md)
+[中文文档](https://github.com/kains2866/vault-change-feed/blob/main/README.zh-CN.md)
 
 ## The problem
 
