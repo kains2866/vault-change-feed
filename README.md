@@ -132,7 +132,7 @@ The JS API's `getChanges` merges unread events per file by default (`api.getChan
 - `Browse recent changes` — modal browser over the most recent events, filterable by file path
 - `Check feed health` — self-diagnostic (seq continuity, duplicates, cursor sanity, `feed-state.json` consistency) with a report modal
 
-The status bar shows the current mode: ✍ recording · ⏸ standby/paused · … starting.
+The status bar shows a file-text icon + `VCF` (with a light that glows ● for ~10 s after user changes are recorded). Click it for a quick menu with all of the above commands — no command palette needed.
 
 ## Settings
 

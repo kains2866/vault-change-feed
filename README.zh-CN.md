@@ -121,7 +121,7 @@ JS API 的 `getChanges` 默认把同一文件的未读事件合并为一条（`a
 - `Browse recent changes` — 最近事件浏览器（Modal，可按路径筛选）。
 - `Check feed health` — 自检弹窗：seq 连续性、重复/逆序、游标越界、feed-state 一致性。
 
-状态栏显示当前状态：✍ 记录中 · ⏸ 待机/暂停 · … 启动中。
+状态栏显示 file-text 图标 + `VCF`（有变更落盘后约 10 秒内右侧亮 ●）；点击可弹出上述全部命令的快捷菜单，无需打开命令面板。
 
 ## 设置
 
