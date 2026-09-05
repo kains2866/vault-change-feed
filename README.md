@@ -148,6 +148,13 @@ The status bar shows the current mode: ✍ recording · ⏸ standby/paused · �
 | Sync AGENTS.md / Sync CLAUDE.md | on | Per-file install targets |
 | Auto-sync protocol block | on | Refresh installed blocks after plugin updates |
 
+## Platform & compatibility notes
+
+- **Tested**: macOS desktop and mobile (file operations go through the official vault adapter). **Windows** is not yet smoke-tested — please report any issue; code hardening already covers the usual Windows pitfalls (rename-overwrite failures, backslash separators in exclude globs, orphaned `.tmp` leftovers from crashes/sync).
+- **Third-party sync (iCloud / Syncthing / Dropbox / OneDrive / git)**: the writer lock only coordinates Obsidian instances *locally*. With real multi-device sync the lock file travels with latency, so enable this plugin on **one device at a time** for a vault. On startup, the plugin reconciles changes made while it was closed — changes from other devices are picked up then.
+- **Heavy vaults**: the baseline keeps text in memory up to the content budget (default 100 MB desktop / 20 MB mobile). If you sync a very large vault, lower the budget in settings to cut memory and sync traffic.
+- **Per-reader cursors**: all AI readers share one `cursors.json`; concurrent `markRead` is at-least-once safe (worst case: a reader re-reads), never loses events.
+
 ## Privacy
 
 Fully local: no network calls, no uploads, no data collection. Everything lives in your own vault.

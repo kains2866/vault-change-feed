@@ -49,5 +49,6 @@ export function parseGlobs(s: string): string[] {
   return s
     .split('\n')
     .map(x => x.trim())
-    .filter(x => x.length > 0);
+    .filter(x => x.length > 0)
+    .map(x => x.replace(/\\/g, '/')); // 兼容 Windows 反斜杠分隔（内部统一 '/'）
 }

@@ -1,4 +1,4 @@
-import { App, DataAdapter, EventRef, Menu, Modal, Notice, Plugin, PluginSettingTab, Setting, TAbstractFile, TFile, TFolder, moment } from 'obsidian';
+import { App, DataAdapter, EventRef, Menu, Modal, Notice, Platform, Plugin, PluginSettingTab, Setting, TAbstractFile, TFile, TFolder, moment } from 'obsidian';
 import { detectLocale, setLocale, t } from './i18n';
 import { FileIO } from './core/fileio';
 import {
@@ -175,7 +175,11 @@ export default class VaultChangeFeedPlugin extends Plugin {
     }
     setLocale(detectLocale(lang));
     const data = (await this.loadData()) as Partial<PersistedData> | null;
-    this.settings = { ...DEFAULT_SETTINGS, ...(data?.settings ?? {}) };
+    // 首次安装的平台默认值：移动端内存/电量更紧张 → 更小基线预算、更长落盘周期
+    const defaults = Platform.isMobile
+      ? { ...DEFAULT_SETTINGS, baselineContentBudgetKb: 20480, flushIntervalSec: 600 }
+      : DEFAULT_SETTINGS;
+    this.settings = { ...defaults, ...(data?.settings ?? {}) };
     this.lastSeq = typeof data?.lastSeq === 'number' ? data.lastSeq : 0;
     if (typeof data?.lastProtocolVersion === 'string') this.lastProtocolVersion = data.lastProtocolVersion;
     this.protocolNoticeShown = data?.protocolNoticeShown === true;
@@ -439,6 +443,8 @@ export default class VaultChangeFeedPlugin extends Plugin {
       window.clearInterval(this.standbyTimer);
       this.standbyTimer = null;
     }
+    // 清理崩溃/同步中断遗留的孤儿 .tmp（Windows rename 失败、同步副本等场景）
+    await this.cleanupOrphanTmp();
 
     // seq 恢复：无条件与日志尾部取 max，防 data.json 回退导致编号倒退
     const r = await readLog(this.io, LOG_FILE);
@@ -629,6 +635,18 @@ export default class VaultChangeFeedPlugin extends Plugin {
     } catch (err) {
       new Notice(t('noticeProtocolFailed'));
       console.error('vault-change-feed removeProtocol failed', err);
+    }
+  }
+
+  /** 清理已知的孤儿 .tmp（原子写中断/同步遗留）；单个失败忽略 */
+  private async cleanupOrphanTmp(): Promise<void> {
+    for (const base of [LOG_FILE, CURSORS_FILE, FEED_STATE_FILE]) {
+      try {
+        const p = `${base}.tmp`;
+        if (await this.io.exists(p)) await this.io.remove(p);
+      } catch {
+        // 忽略
+      }
     }
   }
 

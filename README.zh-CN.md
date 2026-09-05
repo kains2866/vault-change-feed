@@ -138,6 +138,13 @@ JS API 的 `getChanges` 默认把同一文件的未读事件合并为一条（`a
 | Sync CLAUDE.md | 开 | 把协议块安装到 vault 根目录 CLAUDE.md |
 | Auto-sync protocol block | 开 | 插件升级后自动刷新已安装的协议块 |
 
+## 平台与兼容性说明
+
+- **已验证**：macOS 桌面端与移动端（文件操作全部走官方 vault adapter）。**Windows 尚未实机冒烟**——如发现问题请反馈；代码层已覆盖 Windows 常见坑（rename 覆盖失败、排除 glob 反斜杠分隔、崩溃/同步遗留的孤儿 `.tmp` 清理）。
+- **第三方同步（iCloud / Syncthing / Dropbox / OneDrive / git）**：写者锁只在本机实例间协调；真实多设备同步时锁文件本身有传播延迟，建议同一 vault **只在一台设备上启用记录**。插件启动时会对账补记"关闭期间/其他设备"产生的变更。
+- **超大库**：基线按内容预算在内存保留全文（默认桌面 100MB / 移动端 20MB）。若同步很大的库，可在设置中调低预算以减少内存与同步流量。
+- **读者游标**：所有 AI reader 共享一个 `cursors.json`；并发 markRead 是 at-least-once 安全语义（最坏情况某 reader 重读），不会丢事件。
+
 ## 隐私
 
 纯本地：不联网、不上传、不收集任何数据。所有文件都在你自己的 vault 里。
