@@ -127,6 +127,8 @@ export default class VaultChangeFeedPlugin extends Plugin {
   private rescanTimer: number | null = null;
   /** 静默对账进行中标志（防重入） */
   private rescanRunning = false;
+  /** 协议块写入抑制表：path → 过期时间戳（自激写入不记录为 feed 事件） */
+  private suppressedWrites = new Map<string, number>();
 
   async onload(): Promise<void> {
     // moment.locale 为非官方 API，可能抛异常；退回 navigator.language
@@ -434,6 +436,7 @@ export default class VaultChangeFeedPlugin extends Plugin {
           for (const path of this.protocolTargets()) {
             const content = await this.readVaultFileOrNull(path);
             if (content === null || !hasBlock(content)) {
+              this.suppressProtocolWrite(path);
               await this.app.vault.adapter.write(path, upsertBlock(content, renderProtocolBlock(this.app.vault.configDir)));
               installed.push(path);
             }
@@ -485,9 +488,24 @@ export default class VaultChangeFeedPlugin extends Plugin {
     return false;
   }
 
+  /** 登记一次自激写入抑制（默认 60s 窗口，覆盖 adapter 事件到达 + flush 周期） */
+  private suppressProtocolWrite(path: string, windowMs = 60_000): void {
+    this.suppressedWrites.set(path, Date.now() + windowMs);
+  }
+
+  /** path 是否处于自激写入抑制窗口；过期条目顺带清理 */
+  private isSuppressed(path: string): boolean {
+    const expiry = this.suppressedWrites.get(path);
+    if (expiry === undefined) return false;
+    if (expiry > Date.now()) return true;
+    this.suppressedWrites.delete(path);
+    return false;
+  }
+
   /** 无条件把协议块 upsert 到指定文件（install 命令 / 自动同步的刷新语义） */
   private async writeProtocolFile(path: string): Promise<void> {
     const content = await this.readVaultFileOrNull(path);
+    this.suppressProtocolWrite(path);
     await this.app.vault.adapter.write(path, upsertBlock(content, renderProtocolBlock(this.app.vault.configDir)));
   }
 
@@ -530,9 +548,11 @@ export default class VaultChangeFeedPlugin extends Plugin {
         if (content === null || !hasBlock(content)) continue;
         const rest = removeBlock(content);
         if (rest.trim().length === 0) {
+          this.suppressProtocolWrite(path);
           await this.app.vault.adapter.remove(path);
           removed.push(t('fileDeleted', { path }));
         } else {
+          this.suppressProtocolWrite(path);
           await this.app.vault.adapter.write(path, rest);
           removed.push(path);
         }
@@ -594,6 +614,8 @@ export default class VaultChangeFeedPlugin extends Plugin {
 
   private async onCreate(f: TAbstractFile): Promise<void> {
     if (!(f instanceof TFile) || this.isExcludedPath(f.path)) return;
+    // 自激写入（协议块安装/刷新）命中抑制窗口：更新基线但不推事件
+    const suppressed = this.isSuppressed(f.path);
     try {
       if (this.shouldTrackText(f)) {
         const content = await this.app.vault.cachedRead(f);
@@ -606,12 +628,12 @@ export default class VaultChangeFeedPlugin extends Plugin {
         );
         this.baseline.set(f.path, entry);
         this.baselineContentBytes += entryContentBytes(entry);
-        this.feed.push('create', f.path, { stat: { added: countLines(content), removed: 0 } });
+        if (!suppressed) this.feed.push('create', f.path, { stat: { added: countLines(content), removed: 0 } });
       } else {
         const old = this.baseline.get(f.path);
         if (old) this.baselineContentBytes -= entryContentBytes(old);
         this.baseline.set(f.path, makeBinaryEntry(f.stat.size, f.stat.mtime));
-        this.feed.push('create', f.path, { stat: null });
+        if (!suppressed) this.feed.push('create', f.path, { stat: null });
       }
       this.baselineDirty = true;
     } catch {
@@ -621,6 +643,7 @@ export default class VaultChangeFeedPlugin extends Plugin {
 
   private async onModify(f: TAbstractFile): Promise<void> {
     if (!(f instanceof TFile) || this.isExcludedPath(f.path)) return;
+    const suppressed = this.isSuppressed(f.path);
     try {
       if (this.shouldTrackText(f)) {
         const content = await this.app.vault.cachedRead(f);
@@ -634,12 +657,12 @@ export default class VaultChangeFeedPlugin extends Plugin {
         );
         this.baseline.set(f.path, entry);
         this.baselineContentBytes += entryContentBytes(entry);
-        this.feed.push('modify', f.path, { stat });
+        if (!suppressed) this.feed.push('modify', f.path, { stat });
       } else {
         const old = this.baseline.get(f.path);
         if (old) this.baselineContentBytes -= entryContentBytes(old);
         this.baseline.set(f.path, makeBinaryEntry(f.stat.size, f.stat.mtime));
-        this.feed.push('modify', f.path, { stat: null });
+        if (!suppressed) this.feed.push('modify', f.path, { stat: null });
       }
       this.baselineDirty = true;
     } catch {
@@ -649,11 +672,12 @@ export default class VaultChangeFeedPlugin extends Plugin {
 
   private onDelete(f: TAbstractFile): void {
     if (!(f instanceof TFile) || this.isExcludedPath(f.path)) return;
+    const suppressed = this.isSuppressed(f.path);
     const old = this.baseline.get(f.path);
     const stat = old && old.content !== null ? { added: 0, removed: countLines(old.content) } : null;
     if (old) this.baselineContentBytes -= entryContentBytes(old);
     this.baseline.delete(f.path);
-    this.feed.push('delete', f.path, { stat });
+    if (!suppressed) this.feed.push('delete', f.path, { stat });
     this.baselineDirty = true;
   }
 
