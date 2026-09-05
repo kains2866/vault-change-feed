@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { decideLock, parseLock, LOCK_STALE_MS } from '../src/core/writerLock';
+import { decideLock, parseLock, verifyOwnership, LOCK_STALE_MS } from '../src/core/writerLock';
 
 describe('decideLock', () => {
   const now = 1_800_000_000_000;
@@ -26,6 +26,35 @@ describe('decideLock', () => {
     expect(decideLock({ deviceId: 'other', ts: now - LOCK_STALE_MS }, 'me', now)).toBe('standby');
     expect(decideLock({ deviceId: 'other', ts: now - 5000 }, 'me', now, 5000)).toBe('standby');
     expect(decideLock({ deviceId: 'other', ts: now - 5001 }, 'me', now, 5000)).toBe('take');
+  });
+});
+
+describe('verifyOwnership', () => {
+  const now = 1_800_000_000_000;
+
+  it('无锁 → true（可写）', () => {
+    expect(verifyOwnership(null, 'me', now)).toBe(true);
+  });
+
+  it('锁是自己 → true（新旧均视为持有）', () => {
+    expect(verifyOwnership({ deviceId: 'me', ts: now - 1000 }, 'me', now)).toBe(true);
+    expect(verifyOwnership({ deviceId: 'me', ts: 0 }, 'me', now)).toBe(true);
+  });
+
+  it('他人锁但已过期 → true（可接管写）', () => {
+    expect(verifyOwnership({ deviceId: 'other', ts: now - LOCK_STALE_MS - 1 }, 'me', now)).toBe(true);
+  });
+
+  it('他人持有的新鲜锁 → false（不得写入，防止 split-brain）', () => {
+    expect(verifyOwnership({ deviceId: 'other', ts: now }, 'me', now)).toBe(false);
+    expect(verifyOwnership({ deviceId: 'other', ts: now - 1000 }, 'me', now)).toBe(false);
+  });
+
+  it('与 decideLock 语义一致', () => {
+    expect(verifyOwnership(null, 'me', now)).toBe(decideLock(null, 'me', now) === 'take');
+    expect(verifyOwnership({ deviceId: 'other', ts: now }, 'me', now)).toBe(
+      decideLock({ deviceId: 'other', ts: now }, 'me', now) === 'take',
+    );
   });
 });
 

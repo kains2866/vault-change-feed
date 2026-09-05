@@ -71,6 +71,10 @@ const strings = {
     en: 'vault-change-feed: another Obsidian instance is recording changes; this instance is standing by',
     zh: 'vault-change-feed：另一个 Obsidian 实例正在记录变更，本实例待机中',
   },
+  noticeStandbyLost: {
+    en: 'vault-change-feed: writer lock taken over by another instance; this instance is now standing by',
+    zh: 'vault-change-feed：写者锁已被其他实例接管，本实例转入待机',
+  },
   noticeSyncDetected: {
     en: 'vault-change-feed: cloud sync detected ({kinds}) — avoid multiple Obsidian instances on this vault; standby protection is on',
     zh: 'vault-change-feed：检测到云同步（{kinds}）——请避免多实例同时启用本插件，待机保护已开启',

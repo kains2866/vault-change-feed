@@ -1,4 +1,4 @@
-import { App, DataAdapter, Notice, Plugin, PluginSettingTab, Setting, TAbstractFile, TFile, moment } from 'obsidian';
+import { App, DataAdapter, EventRef, Notice, Plugin, PluginSettingTab, Setting, TAbstractFile, TFile, moment } from 'obsidian';
 import { detectLocale, setLocale, t } from './i18n';
 import { FileIO } from './core/fileio';
 import {
@@ -15,7 +15,7 @@ import { isExcluded, isTextFile, ExcludeOptions } from './core/exclude';
 import { reconcile, FileSnapshot } from './core/reconcile';
 import { readLog, appendEvents, rotateIfNeeded } from './core/logStore';
 import { EventFeed } from './core/feed';
-import { decideLock, parseLock, WriterLock } from './core/writerLock';
+import { decideLock, parseLock, verifyOwnership, WriterLock } from './core/writerLock';
 import { detectSync, SyncSignals } from './core/syncDetect';
 import { hasBlock, upsertBlock, removeBlock } from './core/protocolBlock';
 import { renderProtocolBlock } from './core/protocolTemplate';
@@ -115,6 +115,14 @@ export default class VaultChangeFeedPlugin extends Plugin {
   private syncNoticeShown = false;
   /** 基线全文当前占用的估算字节数（initFeed 对账后全量重算，之后增量维护） */
   private baselineContentBytes = 0;
+  /** 当前写者注册的 vault 事件引用（写者降级时动态撤销） */
+  private liveEventRefs: EventRef[] = [];
+  /** 当前写者注册的定时器 id（写者降级时动态清理） */
+  private writerTimers: number[] = [];
+  /** 当前实例是否为活跃写者（rig 已注册、可写日志）；false = 待机中 */
+  private writerLive = false;
+  /** 待机接管轮询定时器；null = 未在轮询 */
+  private standbyTimer: number | null = null;
 
   async onload(): Promise<void> {
     // moment.locale 为非官方 API，可能抛异常；退回 navigator.language
@@ -190,38 +198,113 @@ export default class VaultChangeFeedPlugin extends Plugin {
     }
   }
 
-  /** 写心跳；失败静默（不阻断记录，下个周期重试） */
-  private async writeLock(): Promise<void> {
+  /**
+   * 条件心跳 / 抢占（read-then-write）：仅当锁不存在、是自己或已过期才覆盖写入；
+   * 他人持有的新鲜锁不覆盖（防 split-brain）。返回是否成功写入。
+   */
+  private async writeLock(): Promise<boolean> {
     try {
+      const existing = await this.readLock();
+      if (decideLock(existing, this.deviceId, Date.now()) === 'standby') return false;
       await this.io.write(LOCK_FILE, JSON.stringify({ deviceId: this.deviceId, ts: Date.now() }));
+      return true;
     } catch {
-      // 静默
+      return false;
     }
   }
 
+  /** 抢占锁并回读验证仍是自己；被并发抢占（回读不是自己）返回 false */
+  private async acquireLock(): Promise<boolean> {
+    if (!(await this.writeLock())) return false;
+    const lock = await this.readLock();
+    return lock !== null && lock.deviceId === this.deviceId;
+  }
+
   /**
-   * 启动入口：竞争写者锁。抢到则初始化；否则进入待机——不注册 vault 监听、
+   * 启动入口：竞争写者锁。抢到并验证后初始化；否则进入待机——不注册 vault 监听、
    * 不写任何文件，周期性检查锁以便接管。只读接口（api.getChanges）待机下仍可用。
    */
   private async startFeed(): Promise<void> {
     const existing = await this.readLock();
-    if (decideLock(existing, this.deviceId, Date.now()) === 'standby') {
-      new Notice(t('noticeStandby'));
-      this.registerInterval(window.setInterval(() => void this.tryTakeover(), LOCK_HEARTBEAT_MS));
+    if (decideLock(existing, this.deviceId, Date.now()) === 'standby' || !(await this.acquireLock())) {
+      this.enterStandby();
       return;
     }
-    await this.writeLock();
     await this.initFeed();
   }
 
-  /** 待机实例的接管检查：锁被释放或过期则升级为写者 */
+  /** 进入待机（尚未成为写者）：展示提示并启动接管轮询 */
+  private enterStandby(): void {
+    if (this.writerLive) return; // 已是写者，不降级
+    new Notice(t('noticeStandby'));
+    this.ensureStandbyPoll();
+  }
+
+  /** 写者失去所有权后降级为待机：清理写者 rig 并转为接管轮询 */
+  private demoteToStandby(): void {
+    if (!this.writerLive) return; // 已在待机
+    this.teardownWriter();
+    new Notice(t('noticeStandbyLost'));
+    this.ensureStandbyPoll();
+  }
+
+  /** 待机接管轮询只注册一次 */
+  private ensureStandbyPoll(): void {
+    if (this.standbyTimer !== null) return;
+    this.standbyTimer = window.setInterval(() => void this.tryTakeover(), LOCK_HEARTBEAT_MS);
+  }
+
+  /** 待机实例的接管检查：锁被释放或过期则抢占（带回读验证）并升级为写者 */
   private async tryTakeover(): Promise<void> {
-    if (this.feed) return; // 已初始化
+    if (this.writerLive) return; // 已是写者
     const existing = await this.readLock();
-    if (decideLock(existing, this.deviceId, Date.now()) === 'take') {
-      await this.writeLock();
-      await this.initFeed();
-    }
+    if (decideLock(existing, this.deviceId, Date.now()) === 'standby') return;
+    if (!(await this.acquireLock())) return;
+    await this.initFeed();
+  }
+
+  /** 写事件前的所有权校验（check-before-write）；失权则降级待机并返回 false */
+  private async checkWriterAlive(): Promise<boolean> {
+    const lock = await this.readLock();
+    if (verifyOwnership(lock, this.deviceId, Date.now())) return true;
+    this.demoteToStandby();
+    return false;
+  }
+
+  /** 撤销写者 rig（vault 监听 + 定时器），标记为待机；幂等 */
+  private teardownWriter(): void {
+    for (const ref of this.liveEventRefs) this.app.vault.offref(ref);
+    this.liveEventRefs = [];
+    for (const id of this.writerTimers) window.clearInterval(id);
+    this.writerTimers = [];
+    this.writerLive = false;
+  }
+
+  /** 注册写者 rig：vault 变更监听 + 各周期定时器；同时登记到实例字段供动态撤销 */
+  private registerWriterRig(): void {
+    const trackEvent = (ref: EventRef): void => {
+      this.liveEventRefs.push(ref);
+      this.registerEvent(ref);
+    };
+    const trackTimer = (ms: number, fn: () => void): void => {
+      const id = window.setInterval(fn, ms);
+      this.writerTimers.push(id);
+      this.registerInterval(id);
+    };
+    trackEvent(this.app.vault.on('create', f => void this.onCreate(f)));
+    trackEvent(this.app.vault.on('modify', f => void this.onModify(f)));
+    trackEvent(this.app.vault.on('delete', f => void this.onDelete(f)));
+    trackEvent(this.app.vault.on('rename', (f, oldPath) => void this.onRename(f, oldPath)));
+    trackTimer(EVENT_FLUSH_MS, () => void this.flushEvents());
+    trackTimer(this.settings.flushIntervalSec * 1000, () =>
+      void (async () => {
+        await this.flushEvents();
+        await this.saveBaseline();
+      })(),
+    );
+    trackTimer(ROTATE_MS, () => void this.rotate());
+    // 写者锁条件心跳：证明本实例存活，防止待机实例误接管；失权时不再续写锁
+    trackTimer(LOCK_HEARTBEAT_MS, () => void this.writeLock());
   }
 
   /** 收集云同步检测信号；桌面/移动端兼容，单项失败降级不误判 */
@@ -244,6 +327,13 @@ export default class VaultChangeFeedPlugin extends Plugin {
   }
 
   private async initFeed(): Promise<void> {
+    // 幂等：接管场景下可能残留 rig / 轮询定时器，先清理再初始化
+    this.teardownWriter();
+    if (this.standbyTimer !== null) {
+      window.clearInterval(this.standbyTimer);
+      this.standbyTimer = null;
+    }
+
     // seq 恢复：无条件与日志尾部取 max，防 data.json 回退导致编号倒退
     const r = await readLog(this.io, LOG_FILE);
     this.lastSeq = Math.max(this.lastSeq, r.maxSeq ?? 0);
@@ -288,22 +378,9 @@ export default class VaultChangeFeedPlugin extends Plugin {
     await this.saveBaseline();
     await this.rotate();
 
-    // 对账完成后再注册监听，缩小竞态窗口
-    this.registerEvent(this.app.vault.on('create', f => void this.onCreate(f)));
-    this.registerEvent(this.app.vault.on('modify', f => void this.onModify(f)));
-    this.registerEvent(this.app.vault.on('delete', f => void this.onDelete(f)));
-    this.registerEvent(this.app.vault.on('rename', (f, oldPath) => void this.onRename(f, oldPath)));
-
-    this.registerInterval(window.setInterval(() => void this.flushEvents(), EVENT_FLUSH_MS));
-    this.registerInterval(
-      window.setInterval(
-        () => void (async () => { await this.flushEvents(); await this.saveBaseline(); })(),
-        this.settings.flushIntervalSec * 1000,
-      ),
-    );
-    this.registerInterval(window.setInterval(() => void this.rotate(), ROTATE_MS));
-    // 写者锁心跳：证明本实例存活，防止待机实例误接管
-    this.registerInterval(window.setInterval(() => void this.writeLock(), LOCK_HEARTBEAT_MS));
+    // 对账完成后再注册监听，缩小竞态窗口；注册完才标记为活跃写者
+    this.registerWriterRig();
+    this.writerLive = true;
 
     // 首次运行引导：autoInstallProtocol 开则自动写入缺失的协议块（无块才写，已有块不动）；
     // 关则退回旧的 Notice 提示；无论走哪条路只执行一次
@@ -560,6 +637,8 @@ export default class VaultChangeFeedPlugin extends Plugin {
 
   private async flushEvents(): Promise<void> {
     if (!this.feed || this.feed.pending === 0) return;
+    // check-before-write：失权则不落盘（队列丢弃，接管实例的启动对账会兜底）
+    if (!(await this.checkWriterAlive())) return;
     const events = this.feed.drain();
     try {
       await appendEvents(this.io, LOG_FILE, events);
@@ -575,11 +654,14 @@ export default class VaultChangeFeedPlugin extends Plugin {
 
   private async saveBaseline(): Promise<void> {
     if (!this.baselineDirty) return;
+    if (this.feed && !(await this.checkWriterAlive())) return;
     await this.io.writeBinary(BASELINE_FILE, serializeBaseline(this.baseline));
     this.baselineDirty = false;
   }
 
   private async rotate(): Promise<void> {
+    if (!this.feed) return;
+    if (!(await this.checkWriterAlive())) return;
     try {
       await rotateIfNeeded(
         this.io,
@@ -605,10 +687,13 @@ export default class VaultChangeFeedPlugin extends Plugin {
   onunload(): void {
     // 尽力而为：插件卸载时把队列与基线落盘，最后释放写者锁（fire-and-forget）
     void (async () => {
-      if (this.feed) {
+      if (this.writerLive) {
         await this.flushEvents();
         if (this.baselineDirty) await this.saveBaseline();
-        // 只有写者（feed 已初始化）才持有锁；清理失败无碍，90s 后自然过期
+      }
+      // 只有仍持有锁的写者才清理锁文件；锁已易主时不删，避免破坏接管实例
+      const lock = await this.readLock();
+      if (lock !== null && lock.deviceId === this.deviceId) {
         try {
           await this.io.remove(LOCK_FILE);
         } catch {
