@@ -21,6 +21,8 @@ export interface VaultChangeFeedSettings {
   autoSyncProtocol: boolean;
   /** 首次启用插件时自动把协议块写入 AGENTS.md / CLAUDE.md */
   autoInstallProtocol: boolean;
+  /** 暂停记录（命令 Pause recording 切换）；暂停窗口内不产生 feed 事件 */
+  recordingPaused: boolean;
 }
 
 export const DEFAULT_SETTINGS: VaultChangeFeedSettings = {
@@ -36,6 +38,7 @@ export const DEFAULT_SETTINGS: VaultChangeFeedSettings = {
   syncGeminiMd: true,
   autoSyncProtocol: true,
   autoInstallProtocol: true,
+  recordingPaused: false,
 };
 
 export function parseExtensions(s: string): string[] {

@@ -19,6 +19,9 @@ const strings = {
   cmdInstallProtocol: { en: 'Install AI protocol for agents', zh: '为 AI agent 安装读取协议' },
   cmdRemoveProtocol: { en: 'Remove AI protocol from agent files', zh: '从 agent 文件中移除读取协议' },
   cmdHealth: { en: 'Check feed health', zh: '检查 feed 健康状态' },
+  cmdPause: { en: 'Pause recording', zh: '暂停记录' },
+  cmdResume: { en: 'Resume recording', zh: '恢复记录' },
+  cmdBrowse: { en: 'Browse recent changes', zh: '浏览最近变更' },
   // Notice
   noticeBaselineCorrupted: {
     en: 'vault-change-feed: baseline corrupted, rebuilding',
@@ -100,6 +103,27 @@ const strings = {
   noticeHealthFailed: {
     en: 'vault-change-feed: health check failed, see console',
     zh: 'vault-change-feed：健康检查失败，详情见控制台',
+  },
+  noticePaused: {
+    en: 'vault-change-feed: recording paused — no new events will be recorded',
+    zh: 'vault-change-feed：已暂停记录——期间不产生新事件',
+  },
+  noticeResumed: {
+    en: 'vault-change-feed: recording resumed',
+    zh: 'vault-change-feed：已恢复记录',
+  },
+  noticeBrowseFailed: {
+    en: 'vault-change-feed: failed to read the changelog, see console',
+    zh: 'vault-change-feed：读取变更日志失败，详情见控制台',
+  },
+  browseTitle: { en: 'Recent vault changes', zh: '最近的库变更' },
+  browsePlaceholder: {
+    en: 'Filter by file path…',
+    zh: '按文件路径筛选…',
+  },
+  statusPausedTooltip: {
+    en: 'vault-change-feed: recording paused',
+    zh: 'vault-change-feed：已暂停记录',
   },
   healthTitle: { en: 'Vault change feed — health report', zh: 'Vault change feed — 健康报告' },
   healthClose: { en: 'Close', zh: '关闭' },

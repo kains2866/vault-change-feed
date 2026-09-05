@@ -24,6 +24,7 @@ import { detectSync, SyncSignals } from './core/syncDetect';
 import { hasBlock, upsertBlock, removeBlock } from './core/protocolBlock';
 import { renderProtocolBlock } from './core/protocolTemplate';
 import { getChanges, markRead, formatEvents, FeedPaths, GetChangesOptions } from './protocol';
+import type { ChangeEvent } from './core/types';
 import {
   VaultChangeFeedSettings,
   DEFAULT_SETTINGS,
@@ -202,6 +203,21 @@ export default class VaultChangeFeedPlugin extends Plugin {
       id: 'check-feed-health',
       name: t('cmdHealth'),
       callback: () => void this.checkFeedHealth(),
+    });
+    this.addCommand({
+      id: 'pause-recording',
+      name: t('cmdPause'),
+      callback: () => void this.pauseRecording(),
+    });
+    this.addCommand({
+      id: 'resume-recording',
+      name: t('cmdResume'),
+      callback: () => void this.resumeRecording(),
+    });
+    this.addCommand({
+      id: 'browse-events',
+      name: t('cmdBrowse'),
+      callback: () => void this.browseEvents(),
     });
 
     // 状态栏小部件：写者/待机身份可见化（周期刷新，待机态也显示）
@@ -431,7 +447,10 @@ export default class VaultChangeFeedPlugin extends Plugin {
     // 有旧基线时启动扫描可跳过 size+mtime 未变的文件（预筛免全量重读）
     const snapshots = await this.scanVault(oldBaseline !== null, oldBaseline);
 
-    if (oldBaseline === null) {
+    if (this.settings.recordingPaused) {
+      // 暂停窗口跨重启：静默采纳当前快照为基线，不重放暂停期间的变更事件
+      this.baseline = baselineFromSnapshots(snapshots);
+    } else if (oldBaseline === null) {
       this.baseline = baselineFromSnapshots(snapshots);
       this.feed.push('resync', '', { source: 'system', stat: null });
     } else {
@@ -667,10 +686,35 @@ export default class VaultChangeFeedPlugin extends Plugin {
     return isExcluded(path, this.excludeOpts());
   }
 
+  /** 当前是否处于记录状态（Pause recording 关闭时暂停产生事件） */
+  private recording(): boolean {
+    return !this.settings.recordingPaused;
+  }
+
+  /** 切换暂停并落盘；随后把已排队事件冲刷掉，保证暂停边界干净 */
+  private async setRecordingPaused(paused: boolean): Promise<void> {
+    if (this.settings.recordingPaused === paused) return;
+    this.settings.recordingPaused = paused;
+    await this.saveSettings();
+    await this.flushEvents();
+    this.updateStatusBar();
+  }
+
+  private async pauseRecording(): Promise<void> {
+    await this.setRecordingPaused(true);
+    new Notice(t('noticePaused'));
+  }
+
+  private async resumeRecording(): Promise<void> {
+    await this.setRecordingPaused(false);
+    new Notice(t('noticeResumed'));
+  }
+
   private async onCreate(f: TAbstractFile): Promise<void> {
     if (!(f instanceof TFile) || this.isExcludedPath(f.path)) return;
     // 自激写入（协议块安装/刷新）命中抑制窗口：更新基线但不推事件
     const suppressed = this.isSuppressed(f.path);
+    const record = this.recording() && !suppressed;
     try {
       if (this.shouldTrackText(f)) {
         const content = await this.app.vault.cachedRead(f);
@@ -685,12 +729,12 @@ export default class VaultChangeFeedPlugin extends Plugin {
         );
         this.baseline.set(f.path, entry);
         this.baselineContentBytes += entryContentBytes(entry);
-        if (!suppressed) this.feed.push('create', f.path, { stat: { added: countLines(content), removed: 0 } });
+        if (record) this.feed.push('create', f.path, { stat: { added: countLines(content), removed: 0 } });
       } else {
         const old = this.baseline.get(f.path);
         if (old) this.baselineContentBytes -= entryContentBytes(old);
         this.baseline.set(f.path, makeBinaryEntry(f.stat.size, f.stat.mtime));
-        if (!suppressed) this.feed.push('create', f.path, { stat: null });
+        if (record) this.feed.push('create', f.path, { stat: null });
       }
       this.baselineDirty = true;
     } catch {
@@ -701,6 +745,7 @@ export default class VaultChangeFeedPlugin extends Plugin {
   private async onModify(f: TAbstractFile): Promise<void> {
     if (!(f instanceof TFile) || this.isExcludedPath(f.path)) return;
     const suppressed = this.isSuppressed(f.path);
+    const record = this.recording() && !suppressed;
     try {
       if (this.shouldTrackText(f)) {
         const content = await this.app.vault.cachedRead(f);
@@ -716,12 +761,12 @@ export default class VaultChangeFeedPlugin extends Plugin {
         );
         this.baseline.set(f.path, entry);
         this.baselineContentBytes += entryContentBytes(entry);
-        if (!suppressed) this.feed.push('modify', f.path, { stat });
+        if (record) this.feed.push('modify', f.path, { stat });
       } else {
         const old = this.baseline.get(f.path);
         if (old) this.baselineContentBytes -= entryContentBytes(old);
         this.baseline.set(f.path, makeBinaryEntry(f.stat.size, f.stat.mtime));
-        if (!suppressed) this.feed.push('modify', f.path, { stat: null });
+        if (record) this.feed.push('modify', f.path, { stat: null });
       }
       this.baselineDirty = true;
     } catch {
@@ -732,11 +777,12 @@ export default class VaultChangeFeedPlugin extends Plugin {
   private onDelete(f: TAbstractFile): void {
     if (!(f instanceof TFile) || this.isExcludedPath(f.path)) return;
     const suppressed = this.isSuppressed(f.path);
+    const record = this.recording() && !suppressed;
     const old = this.baseline.get(f.path);
     const stat = old && old.content !== null ? { added: 0, removed: countLines(old.content) } : null;
     if (old) this.baselineContentBytes -= entryContentBytes(old);
     this.baseline.delete(f.path);
-    if (!suppressed) this.feed.push('delete', f.path, { stat });
+    if (record) this.feed.push('delete', f.path, { stat });
     this.baselineDirty = true;
   }
 
@@ -774,6 +820,7 @@ export default class VaultChangeFeedPlugin extends Plugin {
       // 文件夹展开已迁移过该条目（迟到的子文件事件）→ 去重，不再重复上报
       return;
     }
+    if (!this.recording()) return; // 暂停：只迁移基线，不产生事件
     if (oldExcluded) {
       this.feed.push('create', newPath, { stat: null });
     } else if (newExcluded) {
@@ -864,20 +911,36 @@ export default class VaultChangeFeedPlugin extends Plugin {
     }
   }
 
-  /** 状态栏刷新：写者/待机/启动中 + feed 概览 tooltip */
+  /** 状态栏刷新：写者/暂停/待机/启动中 + feed 概览 tooltip */
   private updateStatusBar(): void {
     const el = this.statusBarEl;
     if (!el) return;
     if (this.writerLive) {
-      el.textContent = '✍ vcf';
-      const tip = `${t('statusWriterTooltip')} · ${this.feedState.count} events`;
-      el.title = tip;
+      if (this.settings.recordingPaused) {
+        el.textContent = '⏸ vcf';
+        el.title = t('statusPausedTooltip');
+      } else {
+        el.textContent = '✍ vcf';
+        el.title = `${t('statusWriterTooltip')} · ${this.feedState.count} events`;
+      }
     } else if (this.standbyTimer !== null) {
       el.textContent = '⏸ vcf';
       el.title = t('statusStandbyTooltip');
     } else {
       el.textContent = '… vcf';
       el.title = t('statusIdleTooltip');
+    }
+  }
+
+  /** 事件浏览器：最近 400 条原始事件，按路径筛选 */
+  private async browseEvents(): Promise<void> {
+    try {
+      const { events } = await readLog(this.io, LOG_FILE);
+      const sorted = [...events].sort((a, b) => a.seq - b.seq);
+      new FeedBrowserModal(this.app, sorted.slice(-400)).open();
+    } catch (err) {
+      new Notice(t('noticeBrowseFailed'));
+      console.error('vault-change-feed browse failed', err);
     }
   }
 
@@ -991,6 +1054,47 @@ class FeedHealthModal extends Modal {
     const btn = contentEl.createEl('button', { text: t('healthClose') });
     btn.style.marginTop = '12px';
     btn.addEventListener('click', () => this.close());
+  }
+
+  onClose(): void {
+    this.contentEl.empty();
+  }
+}
+
+/** 事件浏览器弹窗：最近事件 + 路径筛选 */
+class FeedBrowserModal extends Modal {
+  private filter = '';
+
+  constructor(app: App, private events: ChangeEvent[]) {
+    super(app);
+    this.setTitle(t('browseTitle'));
+  }
+
+  onOpen(): void {
+    const { contentEl } = this;
+    contentEl.empty();
+    const input = contentEl.createEl('input', { type: 'text', placeholder: t('browsePlaceholder') });
+    input.style.width = '100%';
+    input.style.marginBottom = '8px';
+    const pre = contentEl.createEl('pre');
+    pre.style.whiteSpace = 'pre-wrap';
+    pre.style.userSelect = 'text';
+    pre.style.maxHeight = '60vh';
+    pre.style.overflow = 'auto';
+    const render = (): void => {
+      const q = this.filter.trim().toLowerCase();
+      const shown = q ? this.events.filter(e => e.path.toLowerCase().includes(q)) : this.events;
+      const rows = formatEvents(shown);
+      pre.setText(`${shown.length} / ${this.events.length} events\n${rows}`);
+    };
+    input.addEventListener('input', () => {
+      this.filter = input.value;
+      render();
+    });
+    render();
+    const closeBtn = contentEl.createEl('button', { text: t('healthClose') });
+    closeBtn.style.marginTop = '12px';
+    closeBtn.addEventListener('click', () => this.close());
   }
 
   onClose(): void {
