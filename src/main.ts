@@ -1,4 +1,4 @@
-import { App, DataAdapter, EventRef, Modal, Notice, Plugin, PluginSettingTab, Setting, TAbstractFile, TFile, TFolder, moment } from 'obsidian';
+import { App, DataAdapter, EventRef, Menu, Modal, Notice, Plugin, PluginSettingTab, Setting, TAbstractFile, TFile, TFolder, moment } from 'obsidian';
 import { detectLocale, setLocale, t } from './i18n';
 import { FileIO } from './core/fileio';
 import {
@@ -220,9 +220,10 @@ export default class VaultChangeFeedPlugin extends Plugin {
       callback: () => void this.browseEvents(),
     });
 
-    // 状态栏小部件：写者/待机身份可见化（周期刷新，待机态也显示）
+    // 状态栏小部件：纯文本 + 可点击快捷菜单（周期刷新，待机态也显示）
     this.statusBarEl = this.addStatusBarItem();
     this.updateStatusBar();
+    this.statusBarEl.addEventListener('click', ev => this.showStatusMenu(ev));
     this.registerInterval(window.setInterval(() => this.updateStatusBar(), 2000));
 
     // vault 索引完成后再启动，避免启动期 create 事件风暴；多实例时进入待机
@@ -911,25 +912,47 @@ export default class VaultChangeFeedPlugin extends Plugin {
     }
   }
 
-  /** 状态栏刷新：写者/暂停/待机/启动中 + feed 概览 tooltip */
+  /** 状态栏刷新：纯文本模式（写者/暂停/待机）+ 详情 tooltip */
   private updateStatusBar(): void {
     const el = this.statusBarEl;
     if (!el) return;
     if (this.writerLive) {
       if (this.settings.recordingPaused) {
-        el.textContent = '⏸ vcf';
+        el.textContent = 'vcf · paused';
         el.title = t('statusPausedTooltip');
       } else {
-        el.textContent = '✍ vcf';
+        el.textContent = 'vcf';
         el.title = `${t('statusWriterTooltip')} · ${this.feedState.count} events`;
       }
     } else if (this.standbyTimer !== null) {
-      el.textContent = '⏸ vcf';
+      el.textContent = 'vcf · standby';
       el.title = t('statusStandbyTooltip');
     } else {
-      el.textContent = '… vcf';
+      el.textContent = 'vcf';
       el.title = t('statusIdleTooltip');
     }
+  }
+
+  /** 点击状态栏：弹出快捷菜单（等价 Cmd+P 内的常用命令） */
+  private showStatusMenu(event: MouseEvent): void {
+    const menu = new Menu();
+    menu.addItem(item =>
+      item.setTitle(t('cmdBrowse')).onClick(() => void this.browseEvents()),
+    );
+    menu.addItem(item =>
+      item.setTitle(t('cmdHealth')).onClick(() => void this.checkFeedHealth()),
+    );
+    menu.addItem(item =>
+      item
+        .setTitle(this.settings.recordingPaused ? t('cmdResume') : t('cmdPause'))
+        .onClick(() =>
+          void (this.settings.recordingPaused ? this.resumeRecording() : this.pauseRecording()),
+        ),
+    );
+    menu.addItem(item =>
+      item.setTitle(t('cmdCopyUnread')).onClick(() => void this.copyUnread()),
+    );
+    menu.showAtMouseEvent(event);
   }
 
   /** 事件浏览器：最近 400 条原始事件，按路径筛选 */
