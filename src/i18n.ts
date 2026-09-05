@@ -123,6 +123,14 @@ const strings = {
     en: 'vault-change-feed: no changes in the last 24 hours',
     zh: 'vault-change-feed：近 24 小时没有变更',
   },
+  activityOnlyResync: {
+    en: 'Only resync/system events in this window — no file-level changes to draw.',
+    zh: '该窗口只有 resync/系统事件，没有可绘制的文件级变更。',
+  },
+  activityEmptyBody: {
+    en: 'No file-level changes to draw in this window.',
+    zh: '该窗口没有可绘制的文件级变更。',
+  },
   browsePlaceholder: {
     en: 'Filter by file path…',
     zh: '按文件路径筛选…',

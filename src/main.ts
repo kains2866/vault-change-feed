@@ -1221,8 +1221,19 @@ class ChangeActivityModal extends Modal {
     const { contentEl } = this;
     contentEl.empty();
 
+    const SVG_NS = 'http://www.w3.org/2000/svg';
+    const svgEl = (tag: string, attrs: Record<string, string | number>): SVGElement => {
+      const el = document.createElementNS(SVG_NS, tag);
+      for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, String(v));
+      return el;
+    };
+
+    // resync 是全局信号不入泳道
+    const evs = this.events.filter(e => e.op !== 'resync');
+    const resyncCount = this.events.length - evs.length;
+
     const byPath = new Map<string, ChangeEvent[]>();
-    for (const e of this.events) {
+    for (const e of evs) {
       const arr = byPath.get(e.path) ?? [];
       arr.push(e);
       byPath.set(e.path, arr);
@@ -1230,66 +1241,163 @@ class ChangeActivityModal extends Modal {
     const lanes = [...byPath.entries()]
       .sort(([, ea], [, eb]) => eb[eb.length - 1].ts - ea[ea.length - 1].ts) // 最近活跃在前
       .slice(0, 8);
-    const t0 = this.events[0].ts;
-    const t1 = Math.max(this.events[this.events.length - 1].ts, t0 + 60_000);
-    const span = t1 - t0;
-    const fmtTime = (ts: number): string =>
-      new Date(ts).toTimeString().slice(0, 5);
+    if (lanes.length === 0) {
+      const empty = contentEl.createDiv();
+      empty.style.cssText = 'opacity:.7;font-size:13px;padding:8px 0;';
+      empty.setText(
+        resyncCount > 0 ? t('activityOnlyResync') : t('activityEmptyBody'),
+      );
+      return;
+    }
 
-    // 图例
+    const t0 = Math.min(...evs.map(e => e.ts));
+    const t1 = Math.max(...evs.map(e => e.ts), t0 + 60_000);
+    const span = t1 - t0;
+    const fmtTime = (ts: number): string => new Date(ts).toTimeString().slice(0, 5);
+    const shortPath = (p: string, max = 24): string =>
+      p.length > max ? '…' + p.slice(-(max - 1)) : p;
+
+    // 图例与摘要
     const legend = contentEl.createDiv();
-    legend.style.cssText = 'margin-bottom:8px;display:flex;gap:12px;font-size:12px;opacity:.85;';
+    legend.style.cssText = 'margin-bottom:6px;display:flex;gap:12px;font-size:12px;opacity:.85;flex-wrap:wrap;';
     for (const [op, color] of Object.entries(OP_COLORS)) {
+      if (op === 'resync') continue;
       const item = legend.createSpan();
       item.style.cssText = 'display:inline-flex;align-items:center;gap:4px;';
       item.createSpan({ text: '●' }).style.color = color;
       item.createSpan({ text: op });
     }
+    if (resyncCount > 0) {
+      const item = legend.createSpan();
+      item.style.cssText = 'display:inline-flex;align-items:center;gap:4px;';
+      item.createSpan({ text: '●' }).style.color = OP_COLORS.resync;
+      item.createSpan({ text: `${resyncCount} resync` });
+    }
     const total = contentEl.createDiv();
-    total.setText(`${this.events.length} change event(s) · ${lanes.length} of ${byPath.size} active file(s) · ${fmtTime(t0)}–${fmtTime(t1)}`);
-    total.style.cssText = 'font-size:11px;opacity:.6;margin-bottom:6px;';
+    total.setText(
+      `${evs.length} change event(s) · ${lanes.length} of ${byPath.size} active file(s) · ${fmtTime(t0)}–${fmtTime(t1)}`,
+    );
+    total.style.cssText = 'font-size:11px;opacity:.6;margin-bottom:4px;';
 
-    // 泳道容器
-    const trackW = 720;
-    const labelW = 200;
-    const rowH = 22;
-    const container = contentEl.createDiv();
-    container.style.cssText = 'overflow:auto;max-height:60vh;';
-    const grid = container.createDiv();
-    grid.style.cssText = `position:relative;width:${labelW + trackW}px;`;
+    // 布局常量（SVG 视图坐标）
+    const rowH = 26;
+    const topH = 24;
+    const labelW = 148;
+    const plotW = 780;
+    const padR = 10;
+    const W = labelW + plotW + padR;
+    const H = topH + lanes.length * rowH + 2;
 
-    lanes.forEach(([, evs], idx) => {
-      const path = evs[evs.length - 1].path;
-      const top = idx * rowH;
-      // 标签
-      const label = grid.createDiv();
-      label.style.cssText = `position:absolute;left:0;top:${top}px;width:${labelW - 6}px;height:${rowH}px;line-height:${rowH}px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;direction:rtl;text-align:left;padding-left:6px;`;
-      label.setText(path.length > 28 ? '…' + path.slice(-27) : path);
-      label.title = path;
-      // 泳道背景线
-      const track = grid.createDiv();
-      track.style.cssText = `position:absolute;left:${labelW}px;top:${top + rowH / 2}px;width:${trackW}px;height:1px;background:var(--background-modifier-border);`;
-      // 时间刻度（顶轴）
-      if (idx === 0) {
-        for (let i = 0; i <= 4; i++) {
-          const tick = grid.createDiv();
-          const left = labelW + (trackW * i) / 4;
-          tick.style.cssText = `position:absolute;left:${left}px;top:-14px;transform:translateX(-50%);font-size:10px;opacity:.55;`;
-          tick.setText(fmtTime(t0 + (span * i) / 4));
-        }
+    const svg = svgEl('svg', {
+      viewBox: `0 0 ${W} ${H}`,
+      preserveAspectRatio: 'xMinYMin meet',
+    }) as unknown as SVGSVGElement;
+    svg.style.cssText = 'width:100%;height:auto;display:block;';
+    const xOf = (ts: number): number => labelW + ((ts - t0) / span) * plotW;
+
+    // 泳道底色交替（交替条纹，形成“车道”观感）
+    lanes.forEach((_, idx) => {
+      if (idx % 2 === 1) return;
+      svg.appendChild(
+        svgEl('rect', {
+          x: 0,
+          y: topH + idx * rowH,
+          width: W,
+          height: rowH,
+          fill: 'var(--background-secondary)',
+          opacity: 0.35,
+        }),
+      );
+    });
+
+    // 顶轴：竖网格线 + 时间刻度
+    const TICKS = 6;
+    for (let i = 0; i <= TICKS; i++) {
+      const x = xOf(t0 + (span * i) / TICKS);
+      svg.appendChild(
+        svgEl('line', { x1: x, y1: topH, x2: x, y2: H, stroke: 'var(--background-modifier-border)', 'stroke-width': 1, opacity: 0.6 }),
+      );
+      const label = svgEl('text', { x, y: topH - 8, 'text-anchor': 'middle', 'font-size': 10, fill: 'var(--text-muted)' });
+      label.textContent = fmtTime(t0 + (span * i) / TICKS);
+      svg.appendChild(label);
+    }
+
+    // 逐泳道绘制
+    lanes.forEach(([path, group], idx) => {
+      const y = topH + idx * rowH + rowH / 2;
+
+      const name = svgEl('text', {
+        x: 6,
+        y: y + 4,
+        'font-size': 11,
+        fill: 'var(--text-normal)',
+      });
+      name.textContent = shortPath(path);
+      svg.appendChild(name);
+
+      // 泳道中线
+      svg.appendChild(
+        svgEl('line', {
+          x1: labelW,
+          y1: y,
+          x2: labelW + plotW,
+          y2: y,
+          stroke: 'var(--background-modifier-border)',
+          'stroke-width': 1,
+          opacity: 0.5,
+        }),
+      );
+
+      // 事件活动流：相邻事件连线（按前一个事件的类型着色，半透明）
+      for (let i = 1; i < group.length; i++) {
+        const a = group[i - 1];
+        const b = group[i];
+        const seg = svgEl('line', {
+          x1: xOf(a.ts),
+          y1: y,
+          x2: xOf(b.ts),
+          y2: y,
+          stroke: OP_COLORS[a.op] ?? '#9e9e9e',
+          'stroke-width': 2,
+          opacity: 0.45,
+        });
+        svg.appendChild(seg);
       }
-      // 事件点
-      for (const e of evs) {
-        const left = labelW + ((e.ts - t0) / span) * trackW;
-        const dot = grid.createDiv();
-        const r = Math.min(6, 3 + Math.max(Math.abs(e.stat?.added ?? 0) + Math.abs(e.stat?.removed ?? 0), 0) * 0.06);
-        dot.style.cssText = `position:absolute;left:${left}px;top:${top + rowH / 2}px;width:${r * 2}px;height:${r * 2}px;margin-left:${-r}px;margin-top:${-r}px;border-radius:50%;background:${OP_COLORS[e.op] ?? '#9e9e9e'};cursor:pointer;`;
+
+      // 事件标记（矢量圆点；delete 加叉、rename 加外圈）
+      for (const e of group) {
+        const cx = xOf(e.ts);
+        const mag = Math.abs(e.stat?.added ?? 0) + Math.abs(e.stat?.removed ?? 0);
+        const r = Math.min(7, 3 + mag * 0.05);
+        const color = OP_COLORS[e.op] ?? '#9e9e9e';
+        const circle = svgEl('circle', {
+          cx,
+          cy: y,
+          r,
+          fill: e.op === 'rename' ? 'none' : color,
+          stroke: color,
+          'stroke-width': e.op === 'rename' ? 2 : 1,
+          cursor: 'pointer',
+        });
+        if (e.op === 'delete') {
+          // 叉号：两条细线
+          const g = svgEl('g', {});
+          const ln = (x1: number, y1: number, x2: number, y2: number): SVGElement =>
+            svgEl('line', { x1, y1, x2, y2, stroke: '#fff', 'stroke-width': 1.2 });
+          g.appendChild(ln(cx - r * 0.6, y - r * 0.6, cx + r * 0.6, y + r * 0.6));
+          g.appendChild(ln(cx - r * 0.6, y + r * 0.6, cx + r * 0.6, y - r * 0.6));
+          circle.appendChild(g);
+        }
         const statTxt = e.stat ? ` +${e.stat.added}/-${e.stat.removed}` : '';
-        const desc = `${fmtTime(e.ts)} ${e.op}${statTxt}\n${e.oldPath ? `old: ${e.oldPath}\n` : ''}new: ${e.path}\nsource: ${e.source}`;
-        dot.title = desc;
-        dot.addEventListener('click', () => void this.openPath(e.path));
+        const title = svgEl('title', {});
+        title.textContent = `${fmtTime(e.ts)} ${e.op}${statTxt}\n${e.oldPath ? `old: ${e.oldPath}\n` : ''}new: ${e.path}\nsource: ${e.source}`;
+        circle.appendChild(title);
+        circle.addEventListener('click', () => void this.openPath(e.path));
+        svg.appendChild(circle);
       }
     });
+
+    contentEl.appendChild(svg);
   }
 
   private async openPath(path: string): Promise<void> {
