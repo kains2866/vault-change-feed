@@ -3,7 +3,8 @@
  * vault-change-feed agent hook
  *
  * 会话启动时把 vault 的未读变更注入 AI 上下文，并推进本 reader 的游标。
- * 从会话 cwd 向上查找 `.obsidian/plugins/vault-change-feed/changelog.jsonl`，
+ * 从会话 cwd 向上查找 vault（先探测默认配置目录 `.obsidian`，未命中则逐个探测
+ * vault 根下的其他目录——兼容自定义 configDir 的 vault，见插件 1.1.1+），
  * 找不到（当前目录不在受跟踪的 vault 内）则静默退出，不产生任何输出。
  *
  * 用法（由 hook 配置调用，payload 经 stdin 传入）：
@@ -13,10 +14,11 @@
  * --format=kimi   输出 {"message": "..."}（Kimi Code 从 message 读取文本）
  * --format=claude 输出 {"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": "..."}}
  */
-import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
-const FEED_DIR = join('.obsidian', 'plugins', 'vault-change-feed');
+const DEFAULT_CONFIG_DIR = '.obsidian';
+const PLUGIN_ID = 'vault-change-feed';
 
 function parseArgs() {
   const args = { reader: 'agent', format: 'kimi' };
@@ -35,11 +37,34 @@ function readStdin() {
   }
 }
 
-/** 从 dir 向上找包含 feed 的 vault 根；找不到返回 null */
+/** configDir 下插件数据目录是否存在（manifest 或 changelog 任一命中即认为已安装使用） */
+function isFeedDir(root, configDir) {
+  const dir = join(root, configDir, 'plugins', PLUGIN_ID);
+  return existsSync(join(dir, 'manifest.json')) || existsSync(join(dir, 'changelog.jsonl'));
+}
+
+/**
+ * 从 dir 向上查找 vault 根与配置目录；找不到返回 null。
+ * 候选顺序：默认 `.obsidian` 优先，其后 vault 根下的目录项按字典序探测，
+ * 取第一个包含插件数据目录的候选（同一 vault 一般只有一个配置目录）。
+ */
 function findVault(dir) {
   let cur = dir;
   for (;;) {
-    if (existsSync(join(cur, FEED_DIR, 'changelog.jsonl'))) return cur;
+    if (isFeedDir(cur, DEFAULT_CONFIG_DIR)) return { vault: cur, configDir: DEFAULT_CONFIG_DIR };
+    let entries = [];
+    try {
+      entries = readdirSync(cur, { withFileTypes: true })
+        .filter(d => d.isDirectory() && d.name !== '.' && d.name !== '..')
+        .map(d => d.name)
+        .sort();
+    } catch {
+      entries = [];
+    }
+    for (const name of entries) {
+      if (name === DEFAULT_CONFIG_DIR) continue; // 已探测过
+      if (isFeedDir(cur, name)) return { vault: cur, configDir: name };
+    }
     const parent = dirname(cur);
     if (parent === cur) return null;
     cur = parent;
@@ -150,10 +175,10 @@ function main() {
   const payload = readStdin();
   const cwd = typeof payload.cwd === 'string' ? payload.cwd : process.cwd();
 
-  const vault = findVault(cwd);
-  if (!vault) process.exit(0); // 不在受跟踪 vault 内：静默
+  const found = findVault(cwd);
+  if (!found) process.exit(0); // 不在受跟踪 vault 内：静默
 
-  const feedDir = join(vault, FEED_DIR);
+  const feedDir = join(found.vault, found.configDir, 'plugins', PLUGIN_ID);
   const logPath = join(feedDir, 'changelog.jsonl');
   const cursorsPath = join(feedDir, 'cursors.json');
 
