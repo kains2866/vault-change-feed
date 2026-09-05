@@ -53,6 +53,15 @@ const STATUS_ICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="16" heig
 /** 活动指示灯点亮时长（ms）：最近一次 live 变更落盘后显示 ● */
 const ACTIVITY_DOT_MS = 10_000;
 
+/** 泳道图操作类型配色 */
+const OP_COLORS: Record<string, string> = {
+  create: '#4caf50',
+  modify: '#2196f3',
+  delete: '#f44336',
+  rename: '#9c27b0',
+  resync: '#9e9e9e',
+};
+
 /** 快照 → 基线条目（携带 size/mtime 元信息，供下次启动 stat 预筛） */
 function baselineFromSnapshots(snapshots: FileSnapshot[]): Baseline {
   return new Map(
@@ -231,6 +240,11 @@ export default class VaultChangeFeedPlugin extends Plugin {
       id: 'browse-events',
       name: t('cmdBrowse'),
       callback: () => void this.browseEvents(),
+    });
+    this.addCommand({
+      id: 'show-change-activity',
+      name: t('cmdActivity'),
+      callback: () => void this.showChangeActivity(),
     });
 
     // 状态栏小部件：图标 + VCF 文本 + 活动灯，点击弹快捷菜单（2s 周期刷新）
@@ -989,6 +1003,9 @@ export default class VaultChangeFeedPlugin extends Plugin {
       item.setTitle(t('cmdBrowse')).onClick(() => void this.browseEvents()),
     );
     menu.addItem(item =>
+      item.setTitle(t('cmdActivity')).onClick(() => void this.showChangeActivity()),
+    );
+    menu.addItem(item =>
       item.setTitle(t('cmdHealth')).onClick(() => void this.checkFeedHealth()),
     );
     menu.addItem(item =>
@@ -1013,6 +1030,25 @@ export default class VaultChangeFeedPlugin extends Plugin {
     } catch (err) {
       new Notice(t('noticeBrowseFailed'));
       console.error('vault-change-feed browse failed', err);
+    }
+  }
+
+  /** 泳道活动图：近 24h 事件（最多 500 条）按文件泳道 + 时间轴可视化 */
+  private async showChangeActivity(): Promise<void> {
+    try {
+      const { events } = await readLog(this.io, LOG_FILE);
+      const cutoff = Date.now() - 24 * 3600_000;
+      const recent = events
+        .filter(e => e.ts >= cutoff && e.ts <= Date.now() + 60_000)
+        .sort((a, b) => a.ts - b.ts);
+      if (recent.length === 0) {
+        new Notice(t('noticeActivityEmpty'));
+        return;
+      }
+      new ChangeActivityModal(this.app, recent.slice(-500)).open();
+    } catch (err) {
+      new Notice(t('noticeBrowseFailed'));
+      console.error('vault-change-feed activity failed', err);
     }
   }
 
@@ -1167,6 +1203,101 @@ class FeedBrowserModal extends Modal {
     const closeBtn = contentEl.createEl('button', { text: t('healthClose') });
     closeBtn.style.marginTop = '12px';
     closeBtn.addEventListener('click', () => this.close());
+  }
+
+  onClose(): void {
+    this.contentEl.empty();
+  }
+}
+
+/** 泳道活动图弹窗：每文件一条泳道，事件按 ts 定位、按操作类型着色；点击事件打开文件 */
+class ChangeActivityModal extends Modal {
+  constructor(app: App, private events: ChangeEvent[]) {
+    super(app);
+    this.setTitle(t('activityTitle'));
+  }
+
+  onOpen(): void {
+    const { contentEl } = this;
+    contentEl.empty();
+
+    const byPath = new Map<string, ChangeEvent[]>();
+    for (const e of this.events) {
+      const arr = byPath.get(e.path) ?? [];
+      arr.push(e);
+      byPath.set(e.path, arr);
+    }
+    const lanes = [...byPath.entries()]
+      .sort(([, ea], [, eb]) => eb[eb.length - 1].ts - ea[ea.length - 1].ts) // 最近活跃在前
+      .slice(0, 8);
+    const t0 = this.events[0].ts;
+    const t1 = Math.max(this.events[this.events.length - 1].ts, t0 + 60_000);
+    const span = t1 - t0;
+    const fmtTime = (ts: number): string =>
+      new Date(ts).toTimeString().slice(0, 5);
+
+    // 图例
+    const legend = contentEl.createDiv();
+    legend.style.cssText = 'margin-bottom:8px;display:flex;gap:12px;font-size:12px;opacity:.85;';
+    for (const [op, color] of Object.entries(OP_COLORS)) {
+      const item = legend.createSpan();
+      item.style.cssText = 'display:inline-flex;align-items:center;gap:4px;';
+      item.createSpan({ text: '●' }).style.color = color;
+      item.createSpan({ text: op });
+    }
+    const total = contentEl.createDiv();
+    total.setText(`${this.events.length} change event(s) · ${lanes.length} of ${byPath.size} active file(s) · ${fmtTime(t0)}–${fmtTime(t1)}`);
+    total.style.cssText = 'font-size:11px;opacity:.6;margin-bottom:6px;';
+
+    // 泳道容器
+    const trackW = 720;
+    const labelW = 200;
+    const rowH = 22;
+    const container = contentEl.createDiv();
+    container.style.cssText = 'overflow:auto;max-height:60vh;';
+    const grid = container.createDiv();
+    grid.style.cssText = `position:relative;width:${labelW + trackW}px;`;
+
+    lanes.forEach(([, evs], idx) => {
+      const path = evs[evs.length - 1].path;
+      const top = idx * rowH;
+      // 标签
+      const label = grid.createDiv();
+      label.style.cssText = `position:absolute;left:0;top:${top}px;width:${labelW - 6}px;height:${rowH}px;line-height:${rowH}px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;direction:rtl;text-align:left;padding-left:6px;`;
+      label.setText(path.length > 28 ? '…' + path.slice(-27) : path);
+      label.title = path;
+      // 泳道背景线
+      const track = grid.createDiv();
+      track.style.cssText = `position:absolute;left:${labelW}px;top:${top + rowH / 2}px;width:${trackW}px;height:1px;background:var(--background-modifier-border);`;
+      // 时间刻度（顶轴）
+      if (idx === 0) {
+        for (let i = 0; i <= 4; i++) {
+          const tick = grid.createDiv();
+          const left = labelW + (trackW * i) / 4;
+          tick.style.cssText = `position:absolute;left:${left}px;top:-14px;transform:translateX(-50%);font-size:10px;opacity:.55;`;
+          tick.setText(fmtTime(t0 + (span * i) / 4));
+        }
+      }
+      // 事件点
+      for (const e of evs) {
+        const left = labelW + ((e.ts - t0) / span) * trackW;
+        const dot = grid.createDiv();
+        const r = Math.min(6, 3 + Math.max(Math.abs(e.stat?.added ?? 0) + Math.abs(e.stat?.removed ?? 0), 0) * 0.06);
+        dot.style.cssText = `position:absolute;left:${left}px;top:${top + rowH / 2}px;width:${r * 2}px;height:${r * 2}px;margin-left:${-r}px;margin-top:${-r}px;border-radius:50%;background:${OP_COLORS[e.op] ?? '#9e9e9e'};cursor:pointer;`;
+        const statTxt = e.stat ? ` +${e.stat.added}/-${e.stat.removed}` : '';
+        const desc = `${fmtTime(e.ts)} ${e.op}${statTxt}\n${e.oldPath ? `old: ${e.oldPath}\n` : ''}new: ${e.path}\nsource: ${e.source}`;
+        dot.title = desc;
+        dot.addEventListener('click', () => void this.openPath(e.path));
+      }
+    });
+  }
+
+  private async openPath(path: string): Promise<void> {
+    const file = this.app.vault.getAbstractFileByPath(path);
+    if (file instanceof TFile) {
+      const leaf = this.app.workspace.getLeaf(false);
+      await leaf.openFile(file);
+    }
   }
 
   onClose(): void {
