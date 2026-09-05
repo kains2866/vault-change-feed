@@ -47,6 +47,7 @@ Your AI assistant has no idea what you edited between sessions. Scanning the who
   - `changelog.jsonl` — the event stream, one JSON event per line
   - `cursors.json` — per-reader read cursors
   - `baseline.gz` — content baseline snapshot (for diffs and reconciliation)
+  - `feed-state.json` — tiny status endpoint (`{formatVersion, minSeq, maxSeq, count, updatedAt}`) so agents can tell whether anything is new without reading the whole log; its `formatVersion` anchors future format evolution
 
 Note: the plugin has built-in **standby protection** — concurrent instances coordinate through a heartbeat writer lock (`writer.lock`); only the lock holder records, other instances stand by (read-only API still works) and automatically take over once the lock goes stale (90 s). Still, prefer running it in only **one Obsidian instance per vault at a time**.
 
@@ -125,8 +126,13 @@ The JS API's `getChanges` merges unread events per file by default (`api.getChan
 
 ## Commands
 
-- `Copy unread changes for AI` — copies a compact summary of unread changes (reader `manual`) to the clipboard, ready to paste into any AI chat
+- `Copy unread changes for AI` — copies a compact summary of unread changes (reader `manual`) to the clipboard, ready to paste into any AI chat (capped at 2000 merged events; the rest stay unread and are picked up on the next run)
 - `Install AI protocol for agents` / `Remove AI protocol from agent files` — manage the discovery blocks in `AGENTS.md` / `CLAUDE.md` / `GEMINI.md`
+- `Pause recording` / `Resume recording` — temporarily stop producing feed events (the baseline is still kept up to date, so nothing is misreported later)
+- `Browse recent changes` — modal browser over the most recent events, filterable by file path
+- `Check feed health` — self-diagnostic (seq continuity, duplicates, cursor sanity, `feed-state.json` consistency) with a report modal
+
+The status bar shows the current mode: ✍ recording · ⏸ standby/paused · … starting.
 
 ## Settings
 

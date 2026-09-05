@@ -36,6 +36,7 @@ AI 不知道你背着它改了哪些笔记。全库扫描太贵；不问又会�
   - `changelog.jsonl` — 事件流，一行一条
   - `cursors.json` — 各读者的读取游标
   - `baseline.gz` — 内容基线快照（用于 diff 与对账）
+  - `feed-state.json` — 轻量状态端点（`{formatVersion, minSeq, maxSeq, count, updatedAt}`），agent 先读它即可判断是否有新事件、免全量解析日志；`formatVersion` 同时锚定未来格式演进
 
 注意：插件已内置**待机保护**——多实例通过心跳写者锁（`writer.lock`）协调，只有持锁实例记录变更，其余实例待机（只读 API 仍可用），锁 90 秒过期后待机实例自动接管。但仍建议同一 vault 同一时间只在一个 Obsidian 实例中启用本插件。
 
@@ -114,7 +115,13 @@ JS API 的 `getChanges` 默认把同一文件的未读事件合并为一条（`a
 
 ## 命令
 
-- `Copy unread changes for AI` — 把未读变更的紧凑摘要复制到剪贴板（读者名 `manual`），直接粘给任意 AI 对话。
+- `Copy unread changes for AI` — 把未读变更的紧凑摘要复制到剪贴板（读者名 `manual`），直接粘给任意 AI 对话（上限 2000 条合并事件，超出部分保持未读、下次继续）。
+- `Install AI protocol for agents` / `Remove AI protocol from agent files` — 管理 AGENTS.md / CLAUDE.md / GEMINI.md 中的协议块。
+- `Pause recording` / `Resume recording` — 临时暂停产生 feed 事件（基线仍持续维护，恢复后不会误报）。
+- `Browse recent changes` — 最近事件浏览器（Modal，可按路径筛选）。
+- `Check feed health` — 自检弹窗：seq 连续性、重复/逆序、游标越界、feed-state 一致性。
+
+状态栏显示当前状态：✍ 记录中 · ⏸ 待机/暂停 · … 启动中。
 
 ## 设置
 
