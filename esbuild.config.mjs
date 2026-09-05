@@ -16,9 +16,22 @@ const context = await esbuild.context({
   outfile: 'main.js',
 });
 
+// merge 单源运行时产物（供 extras/vault-feed-hook.mjs 引用，随构建同步）
+const mergeContext = await esbuild.context({
+  entryPoints: ['src/core/merge.ts'],
+  bundle: true,
+  platform: 'node',
+  format: 'esm',
+  target: 'node18',
+  logLevel: 'info',
+  outfile: 'extras/merge-runtime.mjs',
+});
+
 if (prod) {
   await context.rebuild();
+  await mergeContext.rebuild();
   process.exit(0);
 } else {
   await context.watch();
+  await mergeContext.watch();
 }

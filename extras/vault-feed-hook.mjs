@@ -19,6 +19,8 @@
  */
 import { existsSync, readFileSync, readdirSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+// 合并规则单源（src/core/merge.ts），由 esbuild 生成此运行时产物；勿手改本文件
+import { mergeEvents } from './merge-runtime.mjs';
 
 const DEFAULT_CONFIG_DIR = '.obsidian';
 const PLUGIN_ID = 'vault-change-feed';
@@ -108,67 +110,6 @@ function parseLog(content) {
     }
   }
   return events;
-}
-
-/** 与插件 merge.ts 相同的合并规则（保持两处语义一致） */
-function mergeEvents(events) {
-  const sorted = [...events].sort((a, b) => a.seq - b.seq);
-  const groups = new Map();
-  const out = [];
-  for (const e of sorted) {
-    if (e.op === 'resync') {
-      out.push(e);
-      continue;
-    }
-    const g = groups.get(e.path);
-    if (g) g.push(e);
-    else groups.set(e.path, [e]);
-  }
-  const sumStats = (g) => {
-    let added = 0;
-    let removed = 0;
-    for (const e of g) {
-      if (e.stat === null) return null;
-      added += e.stat.added;
-      removed += e.stat.removed;
-    }
-    return { added, removed };
-  };
-  for (const g of groups.values()) {
-    const first = g[0];
-    const last = g[g.length - 1];
-    if (first.op === 'create' && last.op === 'delete') continue; // 窗口内建了又删
-    const firstRename = g.find((e) => e.op === 'rename');
-    const deleteCount = g.reduce((n, e) => n + (e.op === 'delete' ? 1 : 0), 0);
-    const base = {
-      seq: Math.max(...g.map((e) => e.seq)),
-      ts: Math.max(...g.map((e) => e.ts)),
-      source: last.source,
-    };
-    if (last.op === 'delete' && firstRename && deleteCount === 1) {
-      out.push({ ...base, op: 'delete', path: firstRename.oldPath ?? first.path, stat: last.stat });
-    } else if (firstRename && deleteCount > 0) {
-      out.push(...g); // delete 与 rename 交织，拒合并
-    } else if (last.op === 'delete') {
-      out.push({ ...base, op: 'delete', path: first.path, stat: last.stat });
-    } else if (deleteCount > 0) {
-      out.push({ ...base, op: 'modify', path: first.path, stat: null }); // 删了又建
-    } else if (first.op === 'create') {
-      out.push({ ...base, op: 'create', path: first.path, stat: sumStats(g) });
-    } else if (firstRename) {
-      out.push({
-        ...base,
-        op: 'rename',
-        path: first.path,
-        oldPath: firstRename.oldPath,
-        stat: sumStats(g),
-      });
-    } else {
-      out.push({ ...base, op: 'modify', path: first.path, stat: sumStats(g) });
-    }
-  }
-  out.sort((a, b) => a.seq - b.seq);
-  return out;
 }
 
 function formatEvent(e) {
