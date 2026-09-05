@@ -10,6 +10,22 @@ export interface FileIO {
   mkdirp(): Promise<void>;
 }
 
+/**
+ * 原子提交：先把内容写到 tmp，再 rename 覆盖 target。
+ * 部分适配器（Obsidian DataAdapter）在目标已存在时 rename 会失败——此时回退为
+ * 先删目标再 rename（tmp 已写全量内容，删除旧目标不丢数据）。rename 成功即跳过回退。
+ */
+export async function commitTmp(io: FileIO, tmp: string, target: string): Promise<void> {
+  try {
+    await io.rename(tmp, target);
+    return;
+  } catch {
+    // 目标已存在导致 rename 失败（或平台差异）：删旧再 rename
+  }
+  if (await io.exists(target)) await io.remove(target);
+  await io.rename(tmp, target);
+}
+
 export class MemoryFileIO implements FileIO {
   files = new Map<string, string | Uint8Array>();
 

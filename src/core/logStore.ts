@@ -1,5 +1,5 @@
 import { ChangeEvent } from './types';
-import { FileIO } from './fileio';
+import { FileIO, commitTmp } from './fileio';
 
 export interface ReadResult {
   events: ChangeEvent[];
@@ -67,6 +67,6 @@ export async function rotateIfNeeded(
   if (kept.length === events.length) return false;
   const tmp = path + '.tmp';
   await io.write(tmp, kept.map(serializeEvent).join('\n') + (kept.length ? '\n' : ''));
-  await io.rename(tmp, path);
+  await commitTmp(io, tmp, path);
   return true;
 }

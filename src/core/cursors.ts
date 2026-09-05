@@ -1,4 +1,4 @@
-import { FileIO } from './fileio';
+import { FileIO, commitTmp } from './fileio';
 
 export type Cursors = Record<string, number>;
 
@@ -22,5 +22,5 @@ export async function writeCursor(io: FileIO, path: string, name: string, seq: n
   cursors[name] = seq;
   const tmp = path + '.tmp';
   await io.write(tmp, JSON.stringify(cursors, null, 2));
-  await io.rename(tmp, path);
+  await commitTmp(io, tmp, path);
 }

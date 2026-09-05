@@ -1,4 +1,4 @@
-import { FileIO } from './fileio';
+import { FileIO, commitTmp } from './fileio';
 
 /**
  * feed-state.json：日志的轻量状态端点。外部 agent / hook 读它（约 200B）即可判断
@@ -29,11 +29,11 @@ export function buildFeedState(partial: Omit<FeedState, 'formatVersion' | 'updat
   };
 }
 
-/** 原子写 feed-state（tmp + rename） */
+/** 原子写 feed-state（tmp + rename；目标已存在时带删旧回退，兼容部分适配器） */
 export async function writeFeedState(io: FileIO, path: string, state: FeedState): Promise<void> {
   const tmp = path + '.tmp';
   await io.write(tmp, JSON.stringify(state));
-  await io.rename(tmp, path);
+  await commitTmp(io, tmp, path);
 }
 
 /** 解析校验；坏数据返回 null（调用方忽略，状态文件仅是加速端点） */
