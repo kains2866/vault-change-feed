@@ -8,6 +8,8 @@ export interface FileSnapshot {
   hash: string;
   content: string | null;
   mtime: number;
+  /** 文件字节数（可选；随快照落基线做启动预筛，缺失则视为必读） */
+  size?: number;
 }
 
 export function reconcile(
@@ -75,7 +77,14 @@ export function reconcile(
   const events = raw.map(e => ({ ...e, seq: seq++ }));
 
   const baseline: Baseline = new Map<string, BaselineEntry>(
-    current.map(f => [f.path, { hash: f.hash, content: f.content }]),
+    current.map(f => [
+      f.path,
+      {
+        hash: f.hash,
+        content: f.content,
+        ...(f.size !== undefined ? { size: f.size, mtime: f.mtime } : {}),
+      },
+    ]),
   );
   return { events, baseline };
 }

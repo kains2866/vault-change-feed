@@ -6,6 +6,7 @@ import {
   makeTextEntryBudgeted,
   makeBinaryEntry,
   entryContentBytes,
+  isEntryUnchanged,
   serializeBaseline,
   parseBaseline,
   countLines,
@@ -51,6 +52,53 @@ describe('baseline serialize/parse', () => {
     expect(() => parseBaseline(gz({ 'a.md': { hash: 123, content: null } }))).toThrow();
     expect(() => parseBaseline(gz({ 'a.md': { hash: 'abc', content: 42 } }))).toThrow();
     expect(() => parseBaseline(gz({ 'a.md': null }))).toThrow();
+  });
+
+  it('roundtrip preserves optional size/mtime metadata', () => {
+    const b: Baseline = new Map([
+      ['a.md', makeTextEntry('hello', 1234, 1785000000000)],
+      ['big.md', makeTextEntryBudgeted('x'.repeat(100), 0, 10, 100, 1785000000001)],
+    ]);
+    const restored = parseBaseline(serializeBaseline(b));
+    expect(restored).toEqual(b);
+    expect(restored.get('a.md')).toMatchObject({ size: 1234, mtime: 1785000000000 });
+    expect(restored.get('big.md')).toMatchObject({ size: 100, mtime: 1785000000001 });
+  });
+
+  it('accepts legacy entries without size/mtime', () => {
+    const gz = (v: unknown) => gzipSync(strToU8(JSON.stringify(v)));
+    const restored = parseBaseline(gz({ 'a.md': { hash: 'abc', content: null } }));
+    expect(restored.get('a.md')!.size).toBeUndefined();
+  });
+
+  it('rejects invalid optional metadata types', () => {
+    const gz = (v: unknown) => gzipSync(strToU8(JSON.stringify(v)));
+    expect(() => parseBaseline(gz({ 'a.md': { hash: 'abc', content: null, size: 'x' } }))).toThrow();
+    expect(() => parseBaseline(gz({ 'a.md': { hash: 'abc', content: null, mtime: -5 } }))).toThrow();
+    expect(() => parseBaseline(gz({ 'a.md': { hash: 'abc', content: null, size: NaN } }))).toThrow();
+  });
+});
+
+describe('isEntryUnchanged（启动预筛）', () => {
+  const text = makeTextEntry('same content', 100, 5000);
+  const bin = makeBinaryEntry(100, 5000);
+
+  it('文本条目 size+mtime 一致 → true（可复用免重读）', () => {
+    expect(isEntryUnchanged(text, 100, 5000)).toBe(true);
+  });
+
+  it('size 或 mtime 任一变化 → false', () => {
+    expect(isEntryUnchanged(text, 101, 5000)).toBe(false);
+    expect(isEntryUnchanged(text, 100, 5001)).toBe(false);
+  });
+
+  it('binary 条目（bin: 前缀）一律 false，不参与复用', () => {
+    expect(isEntryUnchanged(bin, 100, 5000)).toBe(false);
+  });
+
+  it('旧格式条目无元信息（undefined）→ false', () => {
+    const legacy = makeTextEntry('same content');
+    expect(isEntryUnchanged(legacy, 100, 5000)).toBe(false);
   });
 });
 

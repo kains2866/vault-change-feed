@@ -6,6 +6,7 @@ import {
   makeTextEntryBudgeted,
   makeBinaryEntry,
   entryContentBytes,
+  isEntryUnchanged,
   serializeBaseline,
   parseBaseline,
   countLines,
@@ -37,6 +38,16 @@ const LOCK_FILE = 'writer.lock';
 const LOCK_HEARTBEAT_MS = 30_000;
 /** AI agent 约定俗成的发现点（vault 根目录） */
 const PROTOCOL_FILES = ['AGENTS.md', 'CLAUDE.md', 'GEMINI.md'] as const;
+
+/** 快照 → 基线条目（携带 size/mtime 元信息，供下次启动 stat 预筛） */
+function baselineFromSnapshots(snapshots: FileSnapshot[]): Baseline {
+  return new Map(
+    snapshots.map(s => [
+      s.path,
+      { hash: s.hash, content: s.content, ...(s.size !== undefined ? { size: s.size, mtime: s.mtime } : {}) },
+    ]),
+  );
+}
 
 /** 基于 vault.adapter 的 FileIO：全部走 Obsidian 官方 API，桌面/移动端通用 */
 class AdapterFileIO implements FileIO {
@@ -339,7 +350,7 @@ export default class VaultChangeFeedPlugin extends Plugin {
     try {
       await this.flushEvents();
       const snapshots = await this.scanVault();
-      this.baseline = new Map(snapshots.map(s => [s.path, { hash: s.hash, content: s.content }]));
+      this.baseline = baselineFromSnapshots(snapshots);
       this.baselineContentBytes = 0;
       for (const e of this.baseline.values()) this.baselineContentBytes += entryContentBytes(e);
       this.baselineDirty = true;
@@ -395,10 +406,11 @@ export default class VaultChangeFeedPlugin extends Plugin {
       }
     }
 
-    const snapshots = await this.scanVault();
+    // 有旧基线时启动扫描可跳过 size+mtime 未变的文件（预筛免全量重读）
+    const snapshots = await this.scanVault(oldBaseline !== null, oldBaseline);
 
     if (oldBaseline === null) {
-      this.baseline = new Map(snapshots.map(s => [s.path, { hash: s.hash, content: s.content }]));
+      this.baseline = baselineFromSnapshots(snapshots);
       this.feed.push('resync', '', { source: 'system', stat: null });
     } else {
       const { events, baseline } = reconcile(oldBaseline, snapshots, this.feed.peekNextSeq(), Date.now());
@@ -568,8 +580,13 @@ export default class VaultChangeFeedPlugin extends Plugin {
     }
   }
 
-  /** 扫描 vault 生成快照；读不到的文件（iCloud 占位等）跳过，下轮对账再试 */
-  private async scanVault(): Promise<FileSnapshot[]> {
+  /**
+   * 扫描 vault 生成快照；读不到的文件（iCloud 占位等）跳过，下轮对账再试。
+   * skipUnchanged=true 时，若旧基线中存在 size+mtime 均未变的文本条目，直接复用其
+   * hash/content 跳过 cachedRead——绝大多数启动只做 stat 不读文件。
+   * refBaseline 仅供预筛比对（initFeed 传旧基线）；rescan 路径传 false 强制全读。
+   */
+  private async scanVault(skipUnchanged = false, refBaseline: Baseline | null = null): Promise<FileSnapshot[]> {
     const opts = this.excludeOpts();
     const capBytes = this.settings.largeFileKb * 1024;
     const budgetBytes = this.settings.baselineContentBudgetKb * 1024;
@@ -578,11 +595,26 @@ export default class VaultChangeFeedPlugin extends Plugin {
     for (const f of this.app.vault.getFiles()) {
       if (isExcluded(f.path, opts)) continue;
       if (isTextFile(f.path, opts.trackedExtensions) && f.stat.size <= capBytes) {
+        // 预筛：未变文本文件直接复用基线条目，跳过内容读取
+        if (skipUnchanged && refBaseline !== null) {
+          const prev = refBaseline.get(f.path);
+          if (prev !== undefined && isEntryUnchanged(prev, f.stat.size, f.stat.mtime)) {
+            out.push({
+              path: f.path,
+              hash: prev.hash,
+              content: prev.content,
+              size: f.stat.size,
+              mtime: f.stat.mtime,
+            });
+            usedBytes += entryContentBytes(prev);
+            continue;
+          }
+        }
         try {
           const content = await this.app.vault.cachedRead(f);
           // 预算决策快照 content：超预算只存哈希（hash 仍按全文算，变更检测不受影响）
-          const entry = makeTextEntryBudgeted(content, usedBytes, budgetBytes);
-          out.push({ path: f.path, hash: entry.hash, content: entry.content, mtime: f.stat.mtime });
+          const entry = makeTextEntryBudgeted(content, usedBytes, budgetBytes, f.stat.size, f.stat.mtime);
+          out.push({ path: f.path, hash: entry.hash, content: entry.content, size: f.stat.size, mtime: f.stat.mtime });
           usedBytes += entryContentBytes(entry);
         } catch {
           // iCloud 占位文件等：跳过
@@ -592,6 +624,7 @@ export default class VaultChangeFeedPlugin extends Plugin {
           path: f.path,
           hash: makeBinaryEntry(f.stat.size, f.stat.mtime).hash,
           content: null,
+          size: f.stat.size,
           mtime: f.stat.mtime,
         });
       }
@@ -625,6 +658,8 @@ export default class VaultChangeFeedPlugin extends Plugin {
           content,
           this.baselineContentBytes,
           this.settings.baselineContentBudgetKb * 1024,
+          f.stat.size,
+          f.stat.mtime,
         );
         this.baseline.set(f.path, entry);
         this.baselineContentBytes += entryContentBytes(entry);
@@ -654,6 +689,8 @@ export default class VaultChangeFeedPlugin extends Plugin {
           content,
           this.baselineContentBytes,
           this.settings.baselineContentBudgetKb * 1024,
+          f.stat.size,
+          f.stat.mtime,
         );
         this.baseline.set(f.path, entry);
         this.baselineContentBytes += entryContentBytes(entry);
