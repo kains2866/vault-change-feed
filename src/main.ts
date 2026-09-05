@@ -1,4 +1,4 @@
-import { App, DataAdapter, EventRef, Notice, Plugin, PluginSettingTab, Setting, TAbstractFile, TFile, TFolder, moment } from 'obsidian';
+import { App, DataAdapter, EventRef, Modal, Notice, Plugin, PluginSettingTab, Setting, TAbstractFile, TFile, TFolder, moment } from 'obsidian';
 import { detectLocale, setLocale, t } from './i18n';
 import { FileIO } from './core/fileio';
 import {
@@ -15,7 +15,9 @@ import { lineStat } from './core/diff';
 import { isExcluded, isTextFile, ExcludeOptions } from './core/exclude';
 import { reconcile, FileSnapshot } from './core/reconcile';
 import { readLog, appendEvents, rotateIfNeeded } from './core/logStore';
-import { writeFeedState, buildFeedState, FeedState } from './core/feedState';
+import { writeFeedState, buildFeedState, parseFeedState, FeedState } from './core/feedState';
+import { readCursors } from './core/cursors';
+import { analyzeFeedHealth } from './core/health';
 import { EventFeed } from './core/feed';
 import { decideLock, parseLock, verifyOwnership, WriterLock } from './core/writerLock';
 import { detectSync, SyncSignals } from './core/syncDetect';
@@ -146,6 +148,8 @@ export default class VaultChangeFeedPlugin extends Plugin {
   private feedState: FeedState = { formatVersion: 1, minSeq: null, maxSeq: null, count: 0, updatedAt: 0 };
   /** 待展开的文件夹重命名：oldFolder → {newFolder, timer}（给子文件独立事件留窗口） */
   private pendingFolderRenames = new Map<string, { newPath: string; timer: number }>();
+  /** 状态栏元素（写者/待机/未读数可视化） */
+  private statusBarEl: HTMLElement | null = null;
 
   async onload(): Promise<void> {
     // moment.locale 为非官方 API，可能抛异常；退回 navigator.language
@@ -194,6 +198,16 @@ export default class VaultChangeFeedPlugin extends Plugin {
       name: t('cmdRemoveProtocol'),
       callback: () => void this.removeProtocol(),
     });
+    this.addCommand({
+      id: 'check-feed-health',
+      name: t('cmdHealth'),
+      callback: () => void this.checkFeedHealth(),
+    });
+
+    // 状态栏小部件：写者/待机身份可见化（周期刷新，待机态也显示）
+    this.statusBarEl = this.addStatusBarItem();
+    this.updateStatusBar();
+    this.registerInterval(window.setInterval(() => this.updateStatusBar(), 2000));
 
     // vault 索引完成后再启动，避免启动期 create 事件风暴；多实例时进入待机
     this.app.workspace.onLayoutReady(() => void this.startFeed());
@@ -850,6 +864,63 @@ export default class VaultChangeFeedPlugin extends Plugin {
     }
   }
 
+  /** 状态栏刷新：写者/待机/启动中 + feed 概览 tooltip */
+  private updateStatusBar(): void {
+    const el = this.statusBarEl;
+    if (!el) return;
+    if (this.writerLive) {
+      el.textContent = '✍ vcf';
+      const tip = `${t('statusWriterTooltip')} · ${this.feedState.count} events`;
+      el.title = tip;
+    } else if (this.standbyTimer !== null) {
+      el.textContent = '⏸ vcf';
+      el.title = t('statusStandbyTooltip');
+    } else {
+      el.textContent = '… vcf';
+      el.title = t('statusIdleTooltip');
+    }
+  }
+
+  /** Check feed health：解析日志/游标/状态文件并弹出报告 */
+  private async checkFeedHealth(): Promise<void> {
+    try {
+      const { events } = await readLog(this.io, LOG_FILE);
+      const cursors = await readCursors(this.io, CURSORS_FILE);
+      const h = analyzeFeedHealth(events, cursors);
+
+      let stateLine = 'feed-state.json: not present';
+      if (await this.io.exists(FEED_STATE_FILE)) {
+        const parsed = parseFeedState(await this.io.read(FEED_STATE_FILE));
+        stateLine = parsed
+          ? `feed-state.json: ok (max=${parsed.maxSeq}, count=${parsed.count})${parsed.maxSeq === h.maxSeq ? '' : ' — WARN: maxSeq differs from log!'}`
+          : 'feed-state.json: unreadable/invalid';
+      }
+
+      const issues: string[] = [];
+      if (h.duplicateSeqs > 0) issues.push(`duplicate seq pairs: ${h.duplicateSeqs}`);
+      if (h.descendingPairs > 0) issues.push(`out-of-order seq pairs: ${h.descendingPairs}`);
+      if (h.readersAhead > 0) issues.push(`readers with cursor > maxSeq: ${h.readersAhead}`);
+      if (h.total === 0) issues.push('log is empty (normal on first run)');
+
+      const lines = [
+        `changelog.jsonl: ${h.total} events, seq range [${h.minSeq ?? '-'}..${h.maxSeq ?? '-'}]`,
+        `seq continuity: ${h.missingSeqs} missing number(s)${h.missingSeqs > 0 ? ' (log rotation may truncate — informational)' : ''}`,
+        `cursors.json: ${h.readers} reader(s), ${h.readersAhead} ahead of log`,
+        stateLine,
+      ];
+      if (issues.length > 0) lines.push('', 'Issues:', ...issues);
+
+      new FeedHealthModal(this.app, lines.join('\n')).open();
+      new Notice(
+        issues.length > 0 ? t('noticeHealthIssues', { n: issues.length }) : t('noticeHealthOk'),
+        issues.length > 0 ? 8000 : 3000,
+      );
+    } catch (err) {
+      new Notice(t('noticeHealthFailed'));
+      console.error('vault-change-feed health check failed', err);
+    }
+  }
+
   private async copyUnread(): Promise<void> {
     const MAX_COPY_EVENTS = 2000;
     const res = await getChanges(this.io, this.feedPaths(), 'manual');
@@ -900,6 +971,30 @@ export default class VaultChangeFeedPlugin extends Plugin {
 
   async saveSettings(): Promise<void> {
     await this.saveData(this.persistedData());
+  }
+}
+
+/** feed 健康报告弹窗 */
+class FeedHealthModal extends Modal {
+  constructor(app: App, private report: string) {
+    super(app);
+  }
+
+  onOpen(): void {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.createEl('h3', { text: t('healthTitle') });
+    const pre = contentEl.createEl('pre');
+    pre.style.whiteSpace = 'pre-wrap';
+    pre.style.userSelect = 'text';
+    pre.setText(this.report);
+    const btn = contentEl.createEl('button', { text: t('healthClose') });
+    btn.style.marginTop = '12px';
+    btn.addEventListener('click', () => this.close());
+  }
+
+  onClose(): void {
+    this.contentEl.empty();
   }
 }
 

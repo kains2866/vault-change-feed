@@ -18,6 +18,7 @@ const strings = {
   cmdCopyUnread: { en: 'Copy unread changes for AI', zh: '复制未读变更给 AI' },
   cmdInstallProtocol: { en: 'Install AI protocol for agents', zh: '为 AI agent 安装读取协议' },
   cmdRemoveProtocol: { en: 'Remove AI protocol from agent files', zh: '从 agent 文件中移除读取协议' },
+  cmdHealth: { en: 'Check feed health', zh: '检查 feed 健康状态' },
   // Notice
   noticeBaselineCorrupted: {
     en: 'vault-change-feed: baseline corrupted, rebuilding',
@@ -88,6 +89,32 @@ const strings = {
     zh: 'vault-change-feed：检测到云同步（{kinds}）——请避免多实例同时启用本插件，待机保护已开启',
   },
   fileDeleted: { en: '{path} (file deleted)', zh: '{path}（文件已删除）' },
+  noticeHealthOk: {
+    en: 'vault-change-feed: feed looks healthy',
+    zh: 'vault-change-feed：feed 状态正常',
+  },
+  noticeHealthIssues: {
+    en: 'vault-change-feed: found {n} health issue(s) — see report',
+    zh: 'vault-change-feed：发现 {n} 个健康问题——详见报告',
+  },
+  noticeHealthFailed: {
+    en: 'vault-change-feed: health check failed, see console',
+    zh: 'vault-change-feed：健康检查失败，详情见控制台',
+  },
+  healthTitle: { en: 'Vault change feed — health report', zh: 'Vault change feed — 健康报告' },
+  healthClose: { en: 'Close', zh: '关闭' },
+  statusWriterTooltip: {
+    en: 'vault-change-feed: recording changes',
+    zh: 'vault-change-feed：记录变更中',
+  },
+  statusStandbyTooltip: {
+    en: 'vault-change-feed: standing by (another instance is recording)',
+    zh: 'vault-change-feed：待机中（另一实例正在记录）',
+  },
+  statusIdleTooltip: {
+    en: 'vault-change-feed: starting…',
+    zh: 'vault-change-feed：启动中…',
+  },
   // 设置页
   sTrackedExtsName: { en: 'Tracked text extensions', zh: '跟踪的文本扩展名' },
   sTrackedExtsDesc: {
