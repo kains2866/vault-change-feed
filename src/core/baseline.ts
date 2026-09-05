@@ -1,4 +1,4 @@
-import { gzipSync, gunzipSync, strToU8, strFromU8 } from 'fflate';
+import { gzip, gunzip, strToU8, strFromU8 } from 'fflate';
 import { hashContent, binaryHash } from './hash';
 
 export interface BaselineEntry {
@@ -61,13 +61,27 @@ export function makeBinaryEntry(size: number, mtime: number): BaselineEntry {
   return { hash: binaryHash(size, mtime), content: null };
 }
 
-export function serializeBaseline(baseline: Baseline): Uint8Array {
-  return gzipSync(strToU8(JSON.stringify(Object.fromEntries(baseline))));
+/** fflate 回调转 Promise */
+function gzipAsync(data: Uint8Array): Promise<Uint8Array> {
+  return new Promise((resolve, reject) => {
+    gzip(data, (err, out) => (err ? reject(err) : resolve(out)));
+  });
 }
 
-/** 损坏数据抛异常，由调用方走 resync 流程 */
-export function parseBaseline(data: Uint8Array): Baseline {
-  const json = strFromU8(gunzipSync(data));
+function gunzipAsync(data: Uint8Array): Promise<Uint8Array> {
+  return new Promise((resolve, reject) => {
+    gunzip(data, (err, out) => (err ? reject(err) : resolve(out)));
+  });
+}
+
+/** 异步压缩序列化（主线程不阻塞 UI，大库落盘不再冻结） */
+export function serializeBaseline(baseline: Baseline): Promise<Uint8Array> {
+  return gzipAsync(strToU8(JSON.stringify(Object.fromEntries(baseline))));
+}
+
+/** 异步解压解析；损坏数据抛异常（reject），由调用方走 resync 流程 */
+export async function parseBaseline(data: Uint8Array): Promise<Baseline> {
+  const json = strFromU8(await gunzipAsync(data));
   const obj = JSON.parse(json) as Record<string, BaselineEntry>;
   if (typeof obj !== 'object' || obj === null || Array.isArray(obj)) {
     throw new Error('baseline: not an entry map');

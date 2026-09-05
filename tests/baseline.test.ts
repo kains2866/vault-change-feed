@@ -31,51 +31,51 @@ describe('countLines', () => {
 });
 
 describe('baseline serialize/parse', () => {
-  it('roundtrip with text and binary entries', () => {
+  it('roundtrip with text and binary entries', async () => {
     const b: Baseline = new Map([
       ['笔记/a.md', makeTextEntry('你好\n世界')],
       ['附件/pic.png', makeBinaryEntry(12345, 1785000000000)],
     ]);
-    const restored = parseBaseline(serializeBaseline(b));
+    const restored = await parseBaseline(await serializeBaseline(b));
     expect(restored).toEqual(b);
     expect(restored.get('附件/pic.png')!.content).toBeNull();
     expect(restored.get('附件/pic.png')!.hash).toBe(binaryHash(12345, 1785000000000));
   });
 
-  it('throws on corrupt data', () => {
-    expect(() => parseBaseline(new Uint8Array([1, 2, 3, 4]))).toThrow();
+  it('throws on corrupt data', async () => {
+    await expect(parseBaseline(new Uint8Array([1, 2, 3, 4]))).rejects.toThrow();
   });
 
-  it('throws on semantically invalid entries', () => {
+  it('throws on semantically invalid entries', async () => {
     const gz = (v: unknown) => gzipSync(strToU8(JSON.stringify(v)));
-    expect(() => parseBaseline(gz(['not', 'a', 'map']))).toThrow();
-    expect(() => parseBaseline(gz({ 'a.md': { hash: 123, content: null } }))).toThrow();
-    expect(() => parseBaseline(gz({ 'a.md': { hash: 'abc', content: 42 } }))).toThrow();
-    expect(() => parseBaseline(gz({ 'a.md': null }))).toThrow();
+    await expect(parseBaseline(gz(['not', 'a', 'map']))).rejects.toThrow();
+    await expect(parseBaseline(gz({ 'a.md': { hash: 123, content: null } }))).rejects.toThrow();
+    await expect(parseBaseline(gz({ 'a.md': { hash: 'abc', content: 42 } }))).rejects.toThrow();
+    await expect(parseBaseline(gz({ 'a.md': null }))).rejects.toThrow();
   });
 
-  it('roundtrip preserves optional size/mtime metadata', () => {
+  it('roundtrip preserves optional size/mtime metadata', async () => {
     const b: Baseline = new Map([
       ['a.md', makeTextEntry('hello', 1234, 1785000000000)],
       ['big.md', makeTextEntryBudgeted('x'.repeat(100), 0, 10, 100, 1785000000001)],
     ]);
-    const restored = parseBaseline(serializeBaseline(b));
+    const restored = await parseBaseline(await serializeBaseline(b));
     expect(restored).toEqual(b);
     expect(restored.get('a.md')).toMatchObject({ size: 1234, mtime: 1785000000000 });
     expect(restored.get('big.md')).toMatchObject({ size: 100, mtime: 1785000000001 });
   });
 
-  it('accepts legacy entries without size/mtime', () => {
+  it('accepts legacy entries without size/mtime', async () => {
     const gz = (v: unknown) => gzipSync(strToU8(JSON.stringify(v)));
-    const restored = parseBaseline(gz({ 'a.md': { hash: 'abc', content: null } }));
+    const restored = await parseBaseline(gz({ 'a.md': { hash: 'abc', content: null } }));
     expect(restored.get('a.md')!.size).toBeUndefined();
   });
 
-  it('rejects invalid optional metadata types', () => {
+  it('rejects invalid optional metadata types', async () => {
     const gz = (v: unknown) => gzipSync(strToU8(JSON.stringify(v)));
-    expect(() => parseBaseline(gz({ 'a.md': { hash: 'abc', content: null, size: 'x' } }))).toThrow();
-    expect(() => parseBaseline(gz({ 'a.md': { hash: 'abc', content: null, mtime: -5 } }))).toThrow();
-    expect(() => parseBaseline(gz({ 'a.md': { hash: 'abc', content: null, size: NaN } }))).toThrow();
+    await expect(parseBaseline(gz({ 'a.md': { hash: 'abc', content: null, size: 'x' } }))).rejects.toThrow();
+    await expect(parseBaseline(gz({ 'a.md': { hash: 'abc', content: null, mtime: -5 } }))).rejects.toThrow();
+    await expect(parseBaseline(gz({ 'a.md': { hash: 'abc', content: null, size: NaN } }))).rejects.toThrow();
   });
 });
 

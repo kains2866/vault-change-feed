@@ -399,7 +399,7 @@ export default class VaultChangeFeedPlugin extends Plugin {
     let oldBaseline: Baseline | null = null;
     if (await this.io.exists(BASELINE_FILE)) {
       try {
-        oldBaseline = parseBaseline(await this.io.readBinary(BASELINE_FILE));
+        oldBaseline = await parseBaseline(await this.io.readBinary(BASELINE_FILE));
       } catch {
         oldBaseline = null;
         new Notice(t('noticeBaselineCorrupted'));
@@ -759,7 +759,7 @@ export default class VaultChangeFeedPlugin extends Plugin {
   private async saveBaseline(): Promise<void> {
     if (!this.baselineDirty) return;
     if (this.feed && !(await this.checkWriterAlive())) return;
-    await this.io.writeBinary(BASELINE_FILE, serializeBaseline(this.baseline));
+    await this.io.writeBinary(BASELINE_FILE, await serializeBaseline(this.baseline));
     this.baselineDirty = false;
   }
 
