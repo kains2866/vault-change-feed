@@ -139,6 +139,7 @@ const strings = {
     en: 'vault-change-feed: starting…',
     zh: 'vault-change-feed：启动中…',
   },
+  errMin: { en: 'must be at least {min}', zh: '须不小于 {min}' },
   // 设置页
   sTrackedExtsName: { en: 'Tracked text extensions', zh: '跟踪的文本扩展名' },
   sTrackedExtsDesc: {

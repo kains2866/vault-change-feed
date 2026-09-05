@@ -1,4 +1,21 @@
-import { App, DataAdapter, EventRef, Menu, Modal, Notice, Platform, Plugin, PluginSettingTab, setIcon, Setting, TAbstractFile, TFile, TFolder, moment } from 'obsidian';
+import {
+  App,
+  DataAdapter,
+  EventRef,
+  Menu,
+  Modal,
+  Notice,
+  Platform,
+  Plugin,
+  PluginSettingTab,
+  setIcon,
+  Setting,
+  TAbstractFile,
+  TFile,
+  TFolder,
+  type SettingDefinitionItem,
+  moment,
+} from 'obsidian';
 import { detectLocale, setLocale, t } from './i18n';
 import { FileIO } from './core/fileio';
 import {
@@ -46,6 +63,14 @@ const PROTOCOL_FILES = ['AGENTS.md', 'CLAUDE.md', 'GEMINI.md'] as const;
 
 /** 活动指示灯点亮时长（ms）：最近一次 live 变更落盘后显示 ● */
 const ACTIVITY_DOT_MS = 10_000;
+
+/** 变更会触发基线重扫的设置键（声明式设置 setControlValue 时联动防抖重扫） */
+const RESCAN_SETTING_KEYS = new Set([
+  'trackedExtensions',
+  'excludeGlobs',
+  'largeFileKb',
+  'baselineContentBudgetKb',
+]);
 
 /** 快照 → 基线条目（携带 size/mtime 元信息，供下次启动 stat 预筛） */
 function baselineFromSnapshots(snapshots: FileSnapshot[]): Baseline {
@@ -1172,6 +1197,85 @@ class FeedBrowserModal extends Modal {
 class VaultChangeFeedSettingTab extends PluginSettingTab {
   constructor(app: App, private plugin: VaultChangeFeedPlugin) {
     super(app, plugin);
+  }
+
+  /**
+   * 声明式设置（Obsidian ≥1.13）：让设置进入设置搜索；≥1.13 时框架用此渲染，
+   * <1.13 走 display()（本类同时保留 display 兼容）。键与 settings 字段一一对应。
+   */
+  getSettingDefinitions(): SettingDefinitionItem[] {
+    const minErr = (min: number) => (v: number): string | undefined =>
+      Number.isFinite(v) && v >= min ? undefined : t('errMin', { min });
+    const items: SettingDefinitionItem[] = [
+      {
+        name: t('sTrackedExtsName'),
+        desc: t('sTrackedExtsDesc'),
+        control: { type: 'text', key: 'trackedExtensions' },
+      },
+      {
+        name: t('sExcludeGlobsName'),
+        desc: t('sExcludeGlobsDesc'),
+        control: { type: 'textarea', key: 'excludeGlobs', rows: 3 },
+      },
+      {
+        name: t('sLargeFileName'),
+        desc: t('sLargeFileDesc'),
+        control: { type: 'number', key: 'largeFileKb', min: 1, validate: minErr(1) },
+      },
+      {
+        name: t('sBudgetName'),
+        desc: t('sBudgetDesc'),
+        control: { type: 'number', key: 'baselineContentBudgetKb', min: 1, validate: minErr(1) },
+      },
+      {
+        name: t('sRetentionDaysName'),
+        desc: t('sRetentionDaysDesc'),
+        control: { type: 'number', key: 'retentionDays', min: 1, validate: minErr(1) },
+      },
+      {
+        name: t('sRetentionMaxName'),
+        desc: t('sRetentionMaxDesc'),
+        control: { type: 'number', key: 'retentionMaxEntries', min: 100, validate: minErr(100) },
+      },
+      {
+        name: t('sFlushIntervalName'),
+        desc: t('sFlushIntervalDesc'),
+        control: { type: 'number', key: 'flushIntervalSec', min: 30, validate: minErr(30) },
+      },
+      {
+        name: t('sAutoInstallName'),
+        desc: t('sAutoInstallDesc'),
+        control: { type: 'toggle', key: 'autoInstallProtocol' },
+      },
+      {
+        name: t('sSyncAgentsName'),
+        desc: t('sSyncAgentsDesc'),
+        control: { type: 'toggle', key: 'syncAgentsMd' },
+      },
+      {
+        name: t('sSyncClaudeName'),
+        desc: t('sSyncClaudeDesc'),
+        control: { type: 'toggle', key: 'syncClaudeMd' },
+      },
+      {
+        name: t('sAutoSyncName'),
+        desc: t('sAutoSyncDesc'),
+        control: { type: 'toggle', key: 'autoSyncProtocol' },
+      },
+    ];
+    return items;
+  }
+
+  getControlValue(key: string): unknown {
+    const s = this.plugin.settings as unknown as Record<string, unknown>;
+    return s[key];
+  }
+
+  setControlValue(key: string, value: unknown): void | Promise<void> {
+    const s = this.plugin.settings as unknown as Record<string, unknown>;
+    s[key] = value;
+    void this.plugin.saveSettings();
+    if (RESCAN_SETTING_KEYS.has(key)) this.plugin.scheduleSettingsRescan();
   }
 
   display(): void {
