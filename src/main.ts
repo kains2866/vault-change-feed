@@ -15,6 +15,7 @@ import { lineStat } from './core/diff';
 import { isExcluded, isTextFile, ExcludeOptions } from './core/exclude';
 import { reconcile, FileSnapshot } from './core/reconcile';
 import { readLog, appendEvents, rotateIfNeeded } from './core/logStore';
+import { writeFeedState, buildFeedState, FeedState } from './core/feedState';
 import { EventFeed } from './core/feed';
 import { decideLock, parseLock, verifyOwnership, WriterLock } from './core/writerLock';
 import { detectSync, SyncSignals } from './core/syncDetect';
@@ -31,6 +32,7 @@ import {
 const LOG_FILE = 'changelog.jsonl';
 const CURSORS_FILE = 'cursors.json';
 const BASELINE_FILE = 'baseline.gz';
+const FEED_STATE_FILE = 'feed-state.json';
 const EVENT_FLUSH_MS = 3000;
 const ROTATE_MS = 3600_000;
 const LOCK_FILE = 'writer.lock';
@@ -140,6 +142,8 @@ export default class VaultChangeFeedPlugin extends Plugin {
   private rescanRunning = false;
   /** 协议块写入抑制表：path → 过期时间戳（自激写入不记录为 feed 事件） */
   private suppressedWrites = new Map<string, number>();
+  /** feed-state 内存态：增量维护，rotate/init 时全量重算 */
+  private feedState: FeedState = { formatVersion: 1, minSeq: null, maxSeq: null, count: 0, updatedAt: 0 };
 
   async onload(): Promise<void> {
     // moment.locale 为非官方 API，可能抛异常；退回 navigator.language
@@ -748,11 +752,37 @@ export default class VaultChangeFeedPlugin extends Plugin {
       await appendEvents(this.io, LOG_FILE, events);
       this.lastSeq = Math.max(this.lastSeq, events[events.length - 1].seq);
       await this.saveData(this.persistedData());
+      // 增量维护 feed-state（min 以内存态为准；rotate 会全量重算修正）
+      if (this.feedState.minSeq === null) this.feedState.minSeq = events[0].seq;
+      this.feedState.maxSeq = events[events.length - 1].seq;
+      this.feedState.count += events.length;
+      this.feedState.updatedAt = Date.now();
+      await this.persistFeedState();
     } catch (err) {
       // 失败重入队列，下轮重试
       for (const e of events) this.feed.pushLoaded(e);
       new Notice(t('noticeFlushFailed'));
       console.error('vault-change-feed flush failed', err);
+    }
+  }
+
+  /** feed-state 写入（加速端点，失败静默不影响主链路） */
+  private async persistFeedState(): Promise<void> {
+    try {
+      await writeFeedState(this.io, FEED_STATE_FILE, this.feedState);
+    } catch {
+      // 忽略：状态文件非关键路径
+    }
+  }
+
+  /** 依据当前日志全量重算 feed-state（init / rotate 后调用，修正增量维护的 min/count） */
+  private async refreshFeedState(): Promise<void> {
+    try {
+      const r = await readLog(this.io, LOG_FILE);
+      this.feedState = buildFeedState({ minSeq: r.minSeq, maxSeq: r.maxSeq, count: r.events.length });
+      await this.persistFeedState();
+    } catch {
+      // 忽略
     }
   }
 
@@ -774,6 +804,7 @@ export default class VaultChangeFeedPlugin extends Plugin {
         this.settings.retentionDays,
         Date.now(),
       );
+      await this.refreshFeedState();
     } catch (err) {
       console.error('vault-change-feed rotate failed', err);
     }

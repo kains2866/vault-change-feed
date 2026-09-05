@@ -88,6 +88,7 @@ Claude Code（`~/.claude/settings.json` 的 `hooks.SessionStart`）：
 This vault is tracked by the **vault-change-feed** Obsidian plugin. Before editing notes, catch up on what the user changed since your last visit:
 
 1. Read `.obsidian/plugins/vault-change-feed/cursors.json` and find your reader name (use your agent id, e.g. `"kimi-cli"`; absent means cursor `0`).
+   - 可选快速路径：先读 `.obsidian/plugins/vault-change-feed/feed-state.json`（很小的 `{formatVersion, minSeq, maxSeq, count}`）；若 `maxSeq <= 你的游标` 则无新事件，可跳过日志。状态可能滞后数秒。
 2. Read `.obsidian/plugins/vault-change-feed/changelog.jsonl` (one JSON event per line) and take events with `seq` greater than your cursor.
    - If your cursor is `> 0` and the smallest `seq` in the file is greater than `cursor + 1`, the log was rotated and you missed events — stop and do a full vault rescan instead.
    - If you see an event with `op: "resync"`, the plugin rebuilt its baseline — a full rescan is advised.
