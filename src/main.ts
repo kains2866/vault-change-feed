@@ -1,4 +1,4 @@
-import { App, DataAdapter, EventRef, Notice, Plugin, PluginSettingTab, Setting, TAbstractFile, TFile, moment } from 'obsidian';
+import { App, DataAdapter, EventRef, Notice, Plugin, PluginSettingTab, Setting, TAbstractFile, TFile, TFolder, moment } from 'obsidian';
 import { detectLocale, setLocale, t } from './i18n';
 import { FileIO } from './core/fileio';
 import {
@@ -144,6 +144,8 @@ export default class VaultChangeFeedPlugin extends Plugin {
   private suppressedWrites = new Map<string, number>();
   /** feed-state 内存态：增量维护，rotate/init 时全量重算 */
   private feedState: FeedState = { formatVersion: 1, minSeq: null, maxSeq: null, count: 0, updatedAt: 0 };
+  /** 待展开的文件夹重命名：oldFolder → {newFolder, timer}（给子文件独立事件留窗口） */
+  private pendingFolderRenames = new Map<string, { newPath: string; timer: number }>();
 
   async onload(): Promise<void> {
     // moment.locale 为非官方 API，可能抛异常；退回 navigator.language
@@ -298,6 +300,8 @@ export default class VaultChangeFeedPlugin extends Plugin {
     this.liveEventRefs = [];
     for (const id of this.writerTimers) window.clearInterval(id);
     this.writerTimers = [];
+    for (const { timer } of this.pendingFolderRenames.values()) window.clearTimeout(timer);
+    this.pendingFolderRenames.clear();
     if (this.rescanTimer !== null) {
       window.clearTimeout(this.rescanTimer);
       this.rescanTimer = null;
@@ -723,24 +727,60 @@ export default class VaultChangeFeedPlugin extends Plugin {
   }
 
   private onRename(f: TAbstractFile, oldPath: string): void {
+    if (f instanceof TFolder) {
+      // Obsidian 移动文件夹时是否逐个派发子文件 rename 事件因实现而异：文件夹事件
+      // 到达后先等一个短窗口（子文件若会单独上报，其处理器会把基线条目移走）；
+      // 窗口结束时仍停留在旧前缀下的条目说明没有被单独上报，由这里统一展开补记。
+      const oldFolder = oldPath.replace(/\/+$/, '');
+      if (this.baseline.size === 0) return;
+      const hasChildren = [...this.baseline.keys()].some(p => p.startsWith(oldFolder + '/'));
+      if (!hasChildren) return;
+      const prev = this.pendingFolderRenames.get(oldFolder);
+      if (prev) window.clearTimeout(prev.timer);
+      const timer = window.setTimeout(() => void this.flushFolderRename(oldFolder, f.path), 250);
+      this.pendingFolderRenames.set(oldFolder, { newPath: f.path, timer });
+      return;
+    }
     if (!(f instanceof TFile)) return;
+    this.applyFileRename(oldPath, f.path);
+  }
+
+  /** 单个文件的基线迁移与事件（TFile 事件与文件夹展开共用；语义与原实现一致） */
+  private applyFileRename(oldPath: string, newPath: string): void {
     const oldExcluded = this.isExcludedPath(oldPath);
-    const newExcluded = this.isExcludedPath(f.path);
+    const newExcluded = this.isExcludedPath(newPath);
     if (oldExcluded && newExcluded) return;
     const entry = this.baseline.get(oldPath);
     if (entry) {
       this.baseline.delete(oldPath);
       // 新路径被排除时不移动基线条目，否则下次对账会把排除路径当失踪文件产生幽灵 delete
-      if (!newExcluded) this.baseline.set(f.path, entry);
+      if (!newExcluded) this.baseline.set(newPath, entry);
       this.baselineDirty = true;
+    } else if (!oldExcluded && !newExcluded && this.baseline.has(newPath)) {
+      // 文件夹展开已迁移过该条目（迟到的子文件事件）→ 去重，不再重复上报
+      return;
     }
     if (oldExcluded) {
-      this.feed.push('create', f.path, { stat: null });
+      this.feed.push('create', newPath, { stat: null });
     } else if (newExcluded) {
       this.feed.push('delete', oldPath, { stat: null });
     } else {
-      this.feed.push('rename', f.path, { oldPath, stat: { added: 0, removed: 0 } });
+      this.feed.push('rename', newPath, { oldPath, stat: { added: 0, removed: 0 } });
     }
+  }
+
+  /** 文件夹重命名窗口到期：把仍停留在旧前缀下的受跟踪条目统一迁移并补记 rename */
+  private async flushFolderRename(oldFolder: string, newFolder: string): Promise<void> {
+    this.pendingFolderRenames.delete(oldFolder);
+    if (!this.writerLive) return; // 已降级/待机：交给接管实例的启动对账
+    const newFolderNorm = newFolder.replace(/\/+$/, '');
+    // 收集时迭代快照，避免迁移过程改动 Map 影响遍历
+    const pending = [...this.baseline.keys()].filter(p => p.startsWith(oldFolder + '/'));
+    for (const path of pending) {
+      if (!this.baseline.has(path)) continue; // 窗口内已被单独处理
+      this.applyFileRename(path, newFolderNorm + path.slice(oldFolder.length));
+    }
+    this.baselineDirty = true;
   }
 
   private async flushEvents(): Promise<void> {
