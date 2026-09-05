@@ -22,7 +22,6 @@ const strings = {
   cmdPause: { en: 'Pause recording', zh: '暂停记录' },
   cmdResume: { en: 'Resume recording', zh: '恢复记录' },
   cmdBrowse: { en: 'Browse recent changes', zh: '浏览最近变更' },
-  cmdActivity: { en: 'Show change activity (swimlane)', zh: '显示变更活动图（泳道）' },
   // Notice
   noticeBaselineCorrupted: {
     en: 'vault-change-feed: baseline corrupted, rebuilding',
@@ -118,19 +117,6 @@ const strings = {
     zh: 'vault-change-feed：读取变更日志失败，详情见控制台',
   },
   browseTitle: { en: 'Recent vault changes', zh: '最近的库变更' },
-  activityTitle: { en: 'Change activity (last 24h)', zh: '变更活动图（近 24 小时）' },
-  noticeActivityEmpty: {
-    en: 'vault-change-feed: no changes in the last 24 hours',
-    zh: 'vault-change-feed：近 24 小时没有变更',
-  },
-  activityOnlyResync: {
-    en: 'Only resync/system events in this window — no file-level changes to draw.',
-    zh: '该窗口只有 resync/系统事件，没有可绘制的文件级变更。',
-  },
-  activityEmptyBody: {
-    en: 'No file-level changes to draw in this window.',
-    zh: '该窗口没有可绘制的文件级变更。',
-  },
   browsePlaceholder: {
     en: 'Filter by file path…',
     zh: '按文件路径筛选…',
