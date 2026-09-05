@@ -1,4 +1,4 @@
-import { App, DataAdapter, EventRef, Menu, Modal, Notice, Platform, Plugin, PluginSettingTab, Setting, TAbstractFile, TFile, TFolder, moment } from 'obsidian';
+import { App, DataAdapter, EventRef, Menu, Modal, Notice, Platform, Plugin, PluginSettingTab, setIcon, Setting, TAbstractFile, TFile, TFolder, moment } from 'obsidian';
 import { detectLocale, setLocale, t } from './i18n';
 import { FileIO } from './core/fileio';
 import {
@@ -43,12 +43,6 @@ const LOCK_FILE = 'writer.lock';
 const LOCK_HEARTBEAT_MS = 30_000;
 /** AI agent 约定俗成的发现点（vault 根目录）；GEMINI.md 仅保留用于清理旧版本残留块 */
 const PROTOCOL_FILES = ['AGENTS.md', 'CLAUDE.md', 'GEMINI.md'] as const;
-
-/** 状态栏图标（Bootstrap Icons file-text，MIT）：内联以便随主题 fill 变色 */
-const STATUS_ICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-file-text" viewBox="0 0 16 16">
-  <path d="M5 4a.5.5 0 0 0 0 1h6a.5.5 0 0 0 0-1H5zm-.5 2.5A.5.5 0 0 1 5 6h6a.5.5 0 0 1 0 1H5a.5.5 0 0 1-.5-.5zM5 8a.5.5 0 0 0 0 1h6a.5.5 0 0 0 0-1H5zm0 2a.5.5 0 0 0 0 1h3a.5.5 0 0 0 0-1H5z"/>
-  <path d="M2 2a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V2zm10-1H4a1 1 0 0 0-1 1v12a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V2a1 1 0 0 0-1-1z"/>
-</svg>`;
 
 /** 活动指示灯点亮时长（ms）：最近一次 live 变更落盘后显示 ● */
 const ACTIVITY_DOT_MS = 10_000;
@@ -421,13 +415,19 @@ export default class VaultChangeFeedPlugin extends Plugin {
   private async collectSyncSignals(): Promise<SyncSignals> {
     let basePath: string | null = null;
     try {
-      basePath = (this.app.vault.adapter as any).getBasePath() as string;
+      // getBasePath 仅在桌面端存在且不在公开类型中：结构化收窄，避免 any
+      const adapter = this.app.vault.adapter as DataAdapter & { getBasePath?: () => string };
+      basePath = adapter.getBasePath?.() ?? null;
     } catch {
       basePath = null;
     }
     let obsidianSyncEnabled = false;
     try {
-      obsidianSyncEnabled = (this.app as any).internalPlugins?.plugins?.sync?.enabled === true;
+      // internalPlugins 属内部实现：最小结构化收窄，避免 any
+      const internal = this.app as unknown as {
+        internalPlugins?: { plugins?: Record<string, { enabled?: boolean }> };
+      };
+      obsidianSyncEnabled = internal.internalPlugins?.plugins?.sync?.enabled === true;
     } catch {
       obsidianSyncEnabled = false;
     }
@@ -949,24 +949,11 @@ export default class VaultChangeFeedPlugin extends Plugin {
   private setupStatusBar(): void {
     const el = this.addStatusBarItem();
     el.empty();
-    el.style.display = 'inline-flex';
-    el.style.alignItems = 'center';
-    el.style.gap = '4px';
-    el.style.cursor = 'pointer';
-    const icon = el.createSpan();
-    icon.innerHTML = STATUS_ICON_SVG;
-    const svg = icon.querySelector('svg');
-    if (svg) {
-      svg.style.display = 'block';
-      svg.style.width = '11px';
-      svg.style.height = '11px';
-    }
-    this.statusLabelEl = el.createSpan({ text: 'VCF' });
-    this.statusDotEl = el.createSpan({ text: '●' });
-    this.statusDotEl.style.color = 'var(--interactive-accent)';
-    this.statusDotEl.style.fontSize = '9px';
-    this.statusDotEl.style.lineHeight = '1';
-    this.statusDotEl.style.display = 'none';
+    el.addClass('vcf-status');
+    const icon = el.createSpan({ cls: 'vcf-status-icon' });
+    setIcon(icon, 'file-text'); // 尺寸由 styles.css 控制
+    this.statusLabelEl = el.createSpan({ text: 'VCF', cls: 'vcf-status-label' });
+    this.statusDotEl = el.createSpan({ text: '●', cls: 'vcf-status-dot' });
     el.addEventListener('click', ev => this.showStatusMenu(ev));
     this.statusBarEl = el;
   }
@@ -990,13 +977,13 @@ export default class VaultChangeFeedPlugin extends Plugin {
       label.textContent = 'VCF';
       label.title = t('statusIdleTooltip');
     }
-    // 活动灯：最近 10s 内有 live 变更落盘 → 点亮
+    // 活动灯：最近 10s 内有 live 变更落盘 → 点亮（样式类控制显隐）
     const dot = this.statusDotEl;
     if (dot) {
-      dot.style.display =
-        this.writerLive && !this.settings.recordingPaused && Date.now() - this.activityAt < ACTIVITY_DOT_MS
-          ? 'inline-block'
-          : 'none';
+      dot.toggleClass(
+        'is-on',
+        this.writerLive && !this.settings.recordingPaused && Date.now() - this.activityAt < ACTIVITY_DOT_MS,
+      );
     }
   }
 
@@ -1137,12 +1124,9 @@ class FeedHealthModal extends Modal {
     const { contentEl } = this;
     contentEl.empty();
     contentEl.createEl('h3', { text: t('healthTitle') });
-    const pre = contentEl.createEl('pre');
-    pre.style.whiteSpace = 'pre-wrap';
-    pre.style.userSelect = 'text';
+    const pre = contentEl.createEl('pre', { cls: 'vcf-modal-pre' });
     pre.setText(this.report);
-    const btn = contentEl.createEl('button', { text: t('healthClose') });
-    btn.style.marginTop = '12px';
+    const btn = contentEl.createEl('button', { text: t('healthClose'), cls: 'vcf-modal-btn' });
     btn.addEventListener('click', () => this.close());
   }
 
@@ -1163,14 +1147,8 @@ class FeedBrowserModal extends Modal {
   onOpen(): void {
     const { contentEl } = this;
     contentEl.empty();
-    const input = contentEl.createEl('input', { type: 'text', placeholder: t('browsePlaceholder') });
-    input.style.width = '100%';
-    input.style.marginBottom = '8px';
-    const pre = contentEl.createEl('pre');
-    pre.style.whiteSpace = 'pre-wrap';
-    pre.style.userSelect = 'text';
-    pre.style.maxHeight = '60vh';
-    pre.style.overflow = 'auto';
+    const input = contentEl.createEl('input', { type: 'text', placeholder: t('browsePlaceholder'), cls: 'vcf-modal-input' });
+    const pre = contentEl.createEl('pre', { cls: 'vcf-modal-pre' });
     const render = (): void => {
       const q = this.filter.trim().toLowerCase();
       const shown = q ? this.events.filter(e => e.path.toLowerCase().includes(q)) : this.events;
@@ -1182,8 +1160,7 @@ class FeedBrowserModal extends Modal {
       render();
     });
     render();
-    const closeBtn = contentEl.createEl('button', { text: t('healthClose') });
-    closeBtn.style.marginTop = '12px';
+    const closeBtn = contentEl.createEl('button', { text: t('healthClose'), cls: 'vcf-modal-btn' });
     closeBtn.addEventListener('click', () => this.close());
   }
 

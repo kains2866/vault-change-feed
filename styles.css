@@ -1,0 +1,49 @@
+/* vault-change-feed — 状态栏与弹窗样式（集中管理，避免内联样式） */
+
+/* 状态栏：图标 + VCF 文本 + 活动灯 */
+.vcf-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+}
+
+.vcf-status-icon {
+  display: inline-flex;
+  align-items: center;
+}
+
+.vcf-status-icon svg {
+  width: 11px;
+  height: 11px;
+  display: block;
+}
+
+/* 活动指示灯：默认隐藏，is-on 时点亮（最近 10s 有 live 变更） */
+.vcf-status-dot {
+  display: none;
+  font-size: 9px;
+  line-height: 1;
+  color: var(--interactive-accent);
+}
+
+.vcf-status-dot.is-on {
+  display: inline-block;
+}
+
+/* 弹窗通用 */
+.vcf-modal-input {
+  width: 100%;
+  margin-bottom: 8px;
+}
+
+.vcf-modal-pre {
+  white-space: pre-wrap;
+  user-select: text;
+  max-height: 60vh;
+  overflow: auto;
+}
+
+.vcf-modal-btn {
+  margin-top: 12px;
+}

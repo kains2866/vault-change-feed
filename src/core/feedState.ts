@@ -39,26 +39,38 @@ export async function writeFeedState(io: FileIO, path: string, state: FeedState)
 /** 解析校验；坏数据返回 null（调用方忽略，状态文件仅是加速端点） */
 export function parseFeedState(content: string): FeedState | null {
   try {
-    const v = JSON.parse(content) as unknown;
+    const v: unknown = JSON.parse(content);
     if (v === null || typeof v !== 'object' || Array.isArray(v)) return null;
     const o = v as Record<string, unknown>;
-    const okNum = (x: unknown): x is number => typeof x === 'number' && Number.isFinite(x);
-    if (
-      o.formatVersion !== FEED_STATE_FORMAT_VERSION ||
-      (o.minSeq !== null && !okNum(o.minSeq)) ||
-      (o.maxSeq !== null && !okNum(o.maxSeq)) ||
-      !okNum(o.count) ||
-      !okNum(o.updatedAt)
-    ) {
-      return null;
-    }
-    return {
+    if (o.formatVersion !== FEED_STATE_FORMAT_VERSION) return null;
+
+    // 逐步 typeof 收窄赋值，避免类型断言 lint（no-unnecessary-type-assertion）
+    const state: FeedState = {
       formatVersion: FEED_STATE_FORMAT_VERSION,
-      minSeq: o.minSeq as number | null,
-      maxSeq: o.maxSeq as number | null,
-      count: o.count as number,
-      updatedAt: o.updatedAt as number,
+      minSeq: null,
+      maxSeq: null,
+      count: 0,
+      updatedAt: 0,
     };
+
+    const minSeq = o.minSeq;
+    if (minSeq !== null) {
+      if (typeof minSeq !== 'number' || !Number.isFinite(minSeq)) return null;
+      state.minSeq = minSeq;
+    }
+    const maxSeq = o.maxSeq;
+    if (maxSeq !== null) {
+      if (typeof maxSeq !== 'number' || !Number.isFinite(maxSeq)) return null;
+      state.maxSeq = maxSeq;
+    }
+    const count = o.count;
+    if (typeof count !== 'number' || !Number.isFinite(count)) return null;
+    state.count = count;
+    const updatedAt = o.updatedAt;
+    if (typeof updatedAt !== 'number' || !Number.isFinite(updatedAt)) return null;
+    state.updatedAt = updatedAt;
+
+    return state;
   } catch {
     return null;
   }
