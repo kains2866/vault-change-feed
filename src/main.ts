@@ -123,6 +123,10 @@ export default class VaultChangeFeedPlugin extends Plugin {
   private writerLive = false;
   /** 待机接管轮询定时器；null = 未在轮询 */
   private standbyTimer: number | null = null;
+  /** 设置变更后的防抖重扫定时器；null = 无待执行重扫 */
+  private rescanTimer: number | null = null;
+  /** 静默对账进行中标志（防重入） */
+  private rescanRunning = false;
 
   async onload(): Promise<void> {
     // moment.locale 为非官方 API，可能抛异常；退回 navigator.language
@@ -277,6 +281,10 @@ export default class VaultChangeFeedPlugin extends Plugin {
     this.liveEventRefs = [];
     for (const id of this.writerTimers) window.clearInterval(id);
     this.writerTimers = [];
+    if (this.rescanTimer !== null) {
+      window.clearTimeout(this.rescanTimer);
+      this.rescanTimer = null;
+    }
     this.writerLive = false;
   }
 
@@ -305,6 +313,41 @@ export default class VaultChangeFeedPlugin extends Plugin {
     trackTimer(ROTATE_MS, () => void this.rotate());
     // 写者锁条件心跳：证明本实例存活，防止待机实例误接管；失权时不再续写锁
     trackTimer(LOCK_HEARTBEAT_MS, () => void this.writeLock());
+  }
+
+  /** 设置变更后的防抖重扫：最后一次变更后延迟执行，避免逐键触发全库扫描 */
+  scheduleSettingsRescan(delayMs = 1200): void {
+    if (this.rescanTimer !== null) window.clearTimeout(this.rescanTimer);
+    this.rescanTimer = window.setTimeout(() => {
+      this.rescanTimer = null;
+      void this.rescanAfterSettings();
+    }, delayMs);
+  }
+
+  /**
+   * 静默对账：跟踪设置（扩展名/排除/阈值/预算）变更后，让基线立即按新规则重建。
+   * 不重放事件——新纳入的文件静默采纳（无 create），新排除的文件静默移除（无 delete，
+   * 避免排除目录时产生幽灵删除）；扫描窗口内的竞态变更由后续 live 事件自然覆盖。
+   * 防抖 + 串行保护；待机或失权时跳过（接管后的 initFeed 会按新设置对账）。
+   */
+  private async rescanAfterSettings(): Promise<void> {
+    if (this.rescanRunning || !this.feed) return;
+    if (!(await this.checkWriterAlive())) return;
+    this.rescanRunning = true;
+    try {
+      await this.flushEvents();
+      const snapshots = await this.scanVault();
+      this.baseline = new Map(snapshots.map(s => [s.path, { hash: s.hash, content: s.content }]));
+      this.baselineContentBytes = 0;
+      for (const e of this.baseline.values()) this.baselineContentBytes += entryContentBytes(e);
+      this.baselineDirty = true;
+      await this.saveBaseline();
+      new Notice(t('noticeSettingsRescanned'));
+    } catch (err) {
+      console.error('vault-change-feed settings rescan failed', err);
+    } finally {
+      this.rescanRunning = false;
+    }
   }
 
   /** 收集云同步检测信号；桌面/移动端兼容，单项失败降级不误判 */
@@ -736,6 +779,7 @@ class VaultChangeFeedSettingTab extends PluginSettingTab {
         t.setValue(s.trackedExtensions).onChange(async v => {
           s.trackedExtensions = v;
           await this.plugin.saveSettings();
+          this.plugin.scheduleSettingsRescan();
         }),
       );
 
@@ -746,6 +790,7 @@ class VaultChangeFeedSettingTab extends PluginSettingTab {
         t.setValue(s.excludeGlobs).onChange(async v => {
           s.excludeGlobs = v;
           await this.plugin.saveSettings();
+          this.plugin.scheduleSettingsRescan();
         }),
       );
 
@@ -758,6 +803,7 @@ class VaultChangeFeedSettingTab extends PluginSettingTab {
           if (Number.isFinite(n) && n > 0) {
             s.largeFileKb = n;
             await this.plugin.saveSettings();
+            this.plugin.scheduleSettingsRescan();
           }
         }),
       );
@@ -771,6 +817,7 @@ class VaultChangeFeedSettingTab extends PluginSettingTab {
           if (Number.isFinite(n) && n > 0) {
             s.baselineContentBudgetKb = n;
             await this.plugin.saveSettings();
+            this.plugin.scheduleSettingsRescan();
           }
         }),
       );

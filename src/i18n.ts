@@ -75,6 +75,10 @@ const strings = {
     en: 'vault-change-feed: writer lock taken over by another instance; this instance is now standing by',
     zh: 'vault-change-feed：写者锁已被其他实例接管，本实例转入待机',
   },
+  noticeSettingsRescanned: {
+    en: 'vault-change-feed: tracking settings applied, baseline re-scanned',
+    zh: 'vault-change-feed：跟踪设置已生效，基线已按新规则重新扫描',
+  },
   noticeSyncDetected: {
     en: 'vault-change-feed: cloud sync detected ({kinds}) — avoid multiple Obsidian instances on this vault; standby protection is on',
     zh: 'vault-change-feed：检测到云同步（{kinds}）——请避免多实例同时启用本插件，待机保护已开启',
