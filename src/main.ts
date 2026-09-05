@@ -44,6 +44,15 @@ const LOCK_HEARTBEAT_MS = 30_000;
 /** AI agent 约定俗成的发现点（vault 根目录） */
 const PROTOCOL_FILES = ['AGENTS.md', 'CLAUDE.md', 'GEMINI.md'] as const;
 
+/** 状态栏图标（Bootstrap Icons file-text，MIT）：内联以便随主题 fill 变色 */
+const STATUS_ICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-file-text" viewBox="0 0 16 16">
+  <path d="M5 4a.5.5 0 0 0 0 1h6a.5.5 0 0 0 0-1H5zm-.5 2.5A.5.5 0 0 1 5 6h6a.5.5 0 0 1 0 1H5a.5.5 0 0 1-.5-.5zM5 8a.5.5 0 0 0 0 1h6a.5.5 0 0 0 0-1H5zm0 2a.5.5 0 0 0 0 1h3a.5.5 0 0 0 0-1H5z"/>
+  <path d="M2 2a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V2zm10-1H4a1 1 0 0 0-1 1v12a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V2a1 1 0 0 0-1-1z"/>
+</svg>`;
+
+/** 活动指示灯点亮时长（ms）：最近一次 live 变更落盘后显示 ● */
+const ACTIVITY_DOT_MS = 10_000;
+
 /** 快照 → 基线条目（携带 size/mtime 元信息，供下次启动 stat 预筛） */
 function baselineFromSnapshots(snapshots: FileSnapshot[]): Baseline {
   return new Map(
@@ -149,8 +158,12 @@ export default class VaultChangeFeedPlugin extends Plugin {
   private feedState: FeedState = { formatVersion: 1, minSeq: null, maxSeq: null, count: 0, updatedAt: 0 };
   /** 待展开的文件夹重命名：oldFolder → {newFolder, timer}（给子文件独立事件留窗口） */
   private pendingFolderRenames = new Map<string, { newPath: string; timer: number }>();
-  /** 状态栏元素（写者/待机/未读数可视化） */
+  /** 状态栏元素（图标 + VCF + 活动指示灯；点击弹快捷菜单） */
   private statusBarEl: HTMLElement | null = null;
+  private statusLabelEl: HTMLElement | null = null;
+  private statusDotEl: HTMLElement | null = null;
+  /** 最近一次 live 变更落盘时间戳（活动灯依据）；0 = 尚无 */
+  private activityAt = 0;
 
   async onload(): Promise<void> {
     // moment.locale 为非官方 API，可能抛异常；退回 navigator.language
@@ -220,10 +233,8 @@ export default class VaultChangeFeedPlugin extends Plugin {
       callback: () => void this.browseEvents(),
     });
 
-    // 状态栏小部件：纯文本 + 可点击快捷菜单（周期刷新，待机态也显示）
-    this.statusBarEl = this.addStatusBarItem();
-    this.updateStatusBar();
-    this.statusBarEl.addEventListener('click', ev => this.showStatusMenu(ev));
+    // 状态栏小部件：图标 + VCF 文本 + 活动灯，点击弹快捷菜单（2s 周期刷新）
+    this.setupStatusBar();
     this.registerInterval(window.setInterval(() => this.updateStatusBar(), 2000));
 
     // vault 索引完成后再启动，避免启动期 create 事件风暴；多实例时进入待机
@@ -860,6 +871,11 @@ export default class VaultChangeFeedPlugin extends Plugin {
       this.feedState.count += events.length;
       this.feedState.updatedAt = Date.now();
       await this.persistFeedState();
+      // 状态栏活动灯：仅当本批含用户编辑产生的 live 事件（启动对账的 reconcile/system 不亮灯）
+      if (events.some(e => e.source === 'live')) {
+        this.activityAt = Date.now();
+        this.updateStatusBar();
+      }
     } catch (err) {
       // 失败重入队列，下轮重试
       for (const e of events) this.feed.pushLoaded(e);
@@ -912,24 +928,58 @@ export default class VaultChangeFeedPlugin extends Plugin {
     }
   }
 
-  /** 状态栏刷新：纯文本模式（写者/暂停/待机）+ 详情 tooltip */
+  /** 搭建状态栏：图标 + 标签 + 活动指示灯；点击弹快捷菜单 */
+  private setupStatusBar(): void {
+    const el = this.addStatusBarItem();
+    el.empty();
+    el.style.display = 'inline-flex';
+    el.style.alignItems = 'center';
+    el.style.gap = '4px';
+    el.style.cursor = 'pointer';
+    const icon = el.createSpan();
+    icon.innerHTML = STATUS_ICON_SVG;
+    const svg = icon.querySelector('svg');
+    if (svg) {
+      svg.style.display = 'block';
+      svg.style.width = '11px';
+      svg.style.height = '11px';
+    }
+    this.statusLabelEl = el.createSpan({ text: 'VCF' });
+    this.statusDotEl = el.createSpan({ text: '●' });
+    this.statusDotEl.style.color = 'var(--interactive-accent)';
+    this.statusDotEl.style.fontSize = '9px';
+    this.statusDotEl.style.lineHeight = '1';
+    this.statusDotEl.style.display = 'none';
+    el.addEventListener('click', ev => this.showStatusMenu(ev));
+    this.statusBarEl = el;
+  }
+
+  /** 状态栏刷新：纯文本模式（写者/暂停/待机）+ 活动指示灯 + 详情 tooltip */
   private updateStatusBar(): void {
-    const el = this.statusBarEl;
-    if (!el) return;
+    const label = this.statusLabelEl;
+    if (!label) return;
     if (this.writerLive) {
       if (this.settings.recordingPaused) {
-        el.textContent = 'vcf · paused';
-        el.title = t('statusPausedTooltip');
+        label.textContent = 'VCF · paused';
+        label.title = t('statusPausedTooltip');
       } else {
-        el.textContent = 'vcf';
-        el.title = `${t('statusWriterTooltip')} · ${this.feedState.count} events`;
+        label.textContent = 'VCF';
+        label.title = `${t('statusWriterTooltip')} · ${this.feedState.count} events`;
       }
     } else if (this.standbyTimer !== null) {
-      el.textContent = 'vcf · standby';
-      el.title = t('statusStandbyTooltip');
+      label.textContent = 'VCF · standby';
+      label.title = t('statusStandbyTooltip');
     } else {
-      el.textContent = 'vcf';
-      el.title = t('statusIdleTooltip');
+      label.textContent = 'VCF';
+      label.title = t('statusIdleTooltip');
+    }
+    // 活动灯：最近 10s 内有 live 变更落盘 → 点亮
+    const dot = this.statusDotEl;
+    if (dot) {
+      dot.style.display =
+        this.writerLive && !this.settings.recordingPaused && Date.now() - this.activityAt < ACTIVITY_DOT_MS
+          ? 'inline-block'
+          : 'none';
     }
   }
 
