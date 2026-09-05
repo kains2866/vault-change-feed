@@ -41,7 +41,7 @@ const ROTATE_MS = 3600_000;
 const LOCK_FILE = 'writer.lock';
 /** 写者锁心跳周期；待机实例的接管检查同周期 */
 const LOCK_HEARTBEAT_MS = 30_000;
-/** AI agent 约定俗成的发现点（vault 根目录） */
+/** AI agent 约定俗成的发现点（vault 根目录）；GEMINI.md 仅保留用于清理旧版本残留块 */
 const PROTOCOL_FILES = ['AGENTS.md', 'CLAUDE.md', 'GEMINI.md'] as const;
 
 /** 状态栏图标（Bootstrap Icons file-text，MIT）：内联以便随主题 fill 变色 */
@@ -529,12 +529,11 @@ export default class VaultChangeFeedPlugin extends Plugin {
     }
   }
 
-  /** 启用的协议块目标文件（vault 根目录） */
+  /** 启用的协议块目标文件（vault 根目录）；Gemini CLI 已支持 AGENTS.md，不再单列 GEMINI.md */
   private protocolTargets(): string[] {
     const targets: string[] = [];
     if (this.settings.syncAgentsMd) targets.push('AGENTS.md');
     if (this.settings.syncClaudeMd) targets.push('CLAUDE.md');
-    if (this.settings.syncGeminiMd) targets.push('GEMINI.md');
     return targets;
   }
 
@@ -1300,16 +1299,6 @@ class VaultChangeFeedSettingTab extends PluginSettingTab {
       .addToggle(t =>
         t.setValue(s.syncClaudeMd).onChange(async v => {
           s.syncClaudeMd = v;
-          await this.plugin.saveSettings();
-        }),
-      );
-
-    new Setting(containerEl)
-      .setName(t('sSyncGeminiName'))
-      .setDesc(t('sSyncGeminiDesc'))
-      .addToggle(t =>
-        t.setValue(s.syncGeminiMd).onChange(async v => {
-          s.syncGeminiMd = v;
           await this.plugin.saveSettings();
         }),
       );

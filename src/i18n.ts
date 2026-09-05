@@ -60,8 +60,8 @@ const strings = {
     zh: 'vault-change-feed：AI 协议已从 {files} 移除',
   },
   noticeNoBlockFound: {
-    en: 'vault-change-feed: no AI protocol block found in AGENTS.md / CLAUDE.md / GEMINI.md',
-    zh: 'vault-change-feed：AGENTS.md / CLAUDE.md / GEMINI.md 中未找到协议块',
+    en: 'vault-change-feed: no AI protocol block found in AGENTS.md / CLAUDE.md',
+    zh: 'vault-change-feed：AGENTS.md / CLAUDE.md 中未找到协议块',
   },
   noticeFlushFailed: {
     en: 'vault-change-feed: failed to write changelog, will retry',
@@ -177,23 +177,18 @@ const strings = {
   },
   sAutoInstallName: { en: 'Auto-install AI protocol on first run', zh: '首次运行时自动安装 AI 协议' },
   sAutoInstallDesc: {
-    en: 'Write the protocol block into AGENTS.md / CLAUDE.md / GEMINI.md automatically when the plugin is first enabled.',
-    zh: '首次启用插件时自动把协议块写入 AGENTS.md / CLAUDE.md / GEMINI.md。',
+    en: 'Write the protocol block into AGENTS.md / CLAUDE.md automatically when the plugin is first enabled.',
+    zh: '首次启用插件时自动把协议块写入 AGENTS.md / CLAUDE.md。',
   },
   sSyncAgentsName: { en: 'Sync AGENTS.md', zh: '同步 AGENTS.md' },
   sSyncAgentsDesc: {
-    en: 'Install protocol block into AGENTS.md (read by most AI agents)',
-    zh: '把协议块安装到 AGENTS.md（多数 AI agent 读取）',
+    en: 'Install protocol block into AGENTS.md (read by most AI agents, incl. Gemini CLI)',
+    zh: '把协议块安装到 AGENTS.md（多数 AI agent 读取，含 Gemini CLI）',
   },
   sSyncClaudeName: { en: 'Sync CLAUDE.md', zh: '同步 CLAUDE.md' },
   sSyncClaudeDesc: {
     en: 'Install protocol block into CLAUDE.md (read by Claude Code)',
     zh: '把协议块安装到 CLAUDE.md（Claude Code 读取）',
-  },
-  sSyncGeminiName: { en: 'Sync GEMINI.md', zh: '同步 GEMINI.md' },
-  sSyncGeminiDesc: {
-    en: 'Install protocol block into GEMINI.md (read by Gemini CLI)',
-    zh: '把协议块安装到 GEMINI.md（Gemini CLI 读取）',
   },
   sAutoSyncName: { en: 'Auto-sync protocol block', zh: '自动同步协议块' },
   sAutoSyncDesc: {

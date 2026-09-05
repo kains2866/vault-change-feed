@@ -52,13 +52,13 @@ AI 不知道你背着它改了哪些笔记。全库扫描太贵；不问又会�
 
 ## 让 AI 发现 feed
 
-其他 AI agent（Kimi Code / Claude Code / Codex 等）安装插件后默认不知道 feed 存在。启用插件后，一段读取协议会**自动**以标记块（`<!-- vault-change-feed:start/end -->`）写入 vault 根目录的 `AGENTS.md`、`CLAUDE.md` 与 `GEMINI.md` —— 前两个是各 AI 工具约定俗成的发现点（AGENTS.md 为跨工具标准，CLAUDE.md 对应 Claude Code），GEMINI.md 对应默认不读 AGENTS.md 的 Gemini CLI，开箱即用、零操作。
+其他 AI agent（Kimi Code / Claude Code / Codex 等）安装插件后默认不知道 feed 存在。启用插件后，一段读取协议会**自动**以标记块（`<!-- vault-change-feed:start/end -->`）写入 vault 根目录的 `AGENTS.md` 与 `CLAUDE.md` —— AGENTS.md 为跨工具标准（Gemini CLI 现已支持 AGENTS.md），CLAUDE.md 对应 Claude Code，开箱即用、零操作。
 
 - 可关闭：设置 `Auto-install AI protocol on first run` 关闭（`autoInstallProtocol: false`）后退回手动引导，仍有 `Install AI protocol for agents` / `Remove AI protocol from agent files` 命令手动管理
 - 幂等：重复运行只更新标记块内部，块外你自己的内容逐字保留；没有块则追加到文末并空一行分隔
 - 随版本自动刷新：插件升级后若协议文本有更新，会自动刷新已安装的块；自动同步只刷新已安装块的文件，不会替你创建新文件（可在设置里关闭 Auto-sync）
 - 命令 `Remove AI protocol from agent files` 彻底移除三个文件里的块；若文件只剩协议块则直接删除该文件
-- 写入目标可在设置中分别开关（Sync AGENTS.md / Sync CLAUDE.md / Sync GEMINI.md）
+- 写入目标可在设置中分别开关（Sync AGENTS.md / Sync CLAUDE.md）
 - 没有文件访问权的 AI（纯网页对话等）仍走 `Copy unread changes for AI` 命令，把未读变更粘给它
 
 ### 可选：SessionStart hook（免"自觉"，强制注入）
@@ -116,7 +116,7 @@ JS API 的 `getChanges` 默认把同一文件的未读事件合并为一条（`a
 ## 命令
 
 - `Copy unread changes for AI` — 把未读变更的紧凑摘要复制到剪贴板（读者名 `manual`），直接粘给任意 AI 对话（上限 2000 条合并事件，超出部分保持未读、下次继续）。
-- `Install AI protocol for agents` / `Remove AI protocol from agent files` — 管理 AGENTS.md / CLAUDE.md / GEMINI.md 中的协议块。
+- `Install AI protocol for agents` / `Remove AI protocol from agent files` — 管理 AGENTS.md / CLAUDE.md 中的协议块。
 - `Pause recording` / `Resume recording` — 临时暂停产生 feed 事件（基线仍持续维护，恢复后不会误报）。
 - `Browse recent changes` — 最近事件浏览器（Modal，可按路径筛选）。
 - `Check feed health` — 自检弹窗：seq 连续性、重复/逆序、游标越界、feed-state 一致性。
@@ -133,7 +133,7 @@ JS API 的 `getChanges` 默认把同一文件的未读事件合并为一条（`a
 | Baseline content budget | 102400 KB（100 MB） | 用于 diff 的全文内存预算；超预算文件只存哈希（stat 退化为 null） |
 | Retention days / max entries | 90 / 50000 | 日志轮转，先到先截 |
 | Baseline flush interval | 300 s | 基线持久化周期 |
-| Auto-install AI protocol on first run | 开 | 首次启用插件时自动把协议块写入 AGENTS.md / CLAUDE.md / GEMINI.md |
+| Auto-install AI protocol on first run | 开 | 首次启用插件时自动把协议块写入 AGENTS.md / CLAUDE.md |
 | Sync AGENTS.md | 开 | 把协议块安装到 vault 根目录 AGENTS.md |
 | Sync CLAUDE.md | 开 | 把协议块安装到 vault 根目录 CLAUDE.md |
 | Auto-sync protocol block | 开 | 插件升级后自动刷新已安装的协议块 |

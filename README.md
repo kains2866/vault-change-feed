@@ -23,7 +23,7 @@ If this plugin saves you time, you can buy me a coffee — it keeps the developm
 - **Live change tracking** — create / modify / delete / rename events with line-level diff stats (`+added / −removed`)
 - **Offline backfill** — startup reconciliation catches edits made while Obsidian was closed (phone, iCloud sync, CLI tools); content-hash rename detection included
 - **Incremental AI reads** — each reader (AI agent) keeps its own cursor and pulls only what's new; per-file merge on read collapses edit bursts into one cumulative line
-- **Self-describing to agents** — a reading-protocol block is auto-installed into `AGENTS.md` / `CLAUDE.md` / `GEMINI.md` on first run, so coding agents discover the feed with zero setup
+- **Self-describing to agents** — a reading-protocol block is auto-installed into `AGENTS.md` / `CLAUDE.md` on first run, so coding agents discover the feed with zero setup
 - **Rotation + stale signal** — the log is capped (90 days / 50k entries by default); readers are told explicitly when they must do a full rescan
 - **Fully local** — no network, no telemetry, works on desktop and mobile
 
@@ -63,13 +63,13 @@ Note: the plugin has built-in **standby protection** — concurrent instances co
 
 ## Letting AI agents discover the feed
 
-AI agents don't know the feed exists out of the box. On first enable, the plugin **automatically** installs a reading-protocol block (wrapped in `<!-- vault-change-feed:start/end -->` markers) into the vault-root `AGENTS.md`, `CLAUDE.md`, and `GEMINI.md` — the conventional discovery points for coding agents (AGENTS.md is the cross-tool standard; CLAUDE.md for Claude Code; GEMINI.md for Gemini CLI, which doesn't read AGENTS.md by default). Zero clicks needed.
+AI agents don't know the feed exists out of the box. On first enable, the plugin **automatically** installs a reading-protocol block (wrapped in `<!-- vault-change-feed:start/end -->` markers) into the vault-root `AGENTS.md` and `CLAUDE.md` — the conventional discovery points for coding agents (AGENTS.md is the cross-tool standard, now also read by Gemini CLI; CLAUDE.md for Claude Code). Zero clicks needed.
 
 - **Opt-out**: disable `Auto-install AI protocol on first run` to fall back to a one-time notice; the `Install AI protocol for agents` / `Remove AI protocol from agent files` commands remain available
 - **Idempotent**: re-runs update only the marked block; your own content outside the markers is preserved verbatim
 - **Refreshes with the plugin**: after updates, installed blocks are refreshed automatically — but auto-sync only touches files that already have a block, it never creates new ones (can be disabled)
 - **Clean removal**: the remove command strips the block from all three files, deleting a file only if nothing else remains
-- **Per-file toggles**: Sync AGENTS.md / Sync CLAUDE.md / Sync GEMINI.md
+- **Per-file toggles**: Sync AGENTS.md / Sync CLAUDE.md
 - AIs without filesystem access (plain web chats) use the `Copy unread changes for AI` command instead
 
 ### Optional: SessionStart hook (enforced, not "please read")
@@ -127,7 +127,7 @@ The JS API's `getChanges` merges unread events per file by default (`api.getChan
 ## Commands
 
 - `Copy unread changes for AI` — copies a compact summary of unread changes (reader `manual`) to the clipboard, ready to paste into any AI chat (capped at 2000 merged events; the rest stay unread and are picked up on the next run)
-- `Install AI protocol for agents` / `Remove AI protocol from agent files` — manage the discovery blocks in `AGENTS.md` / `CLAUDE.md` / `GEMINI.md`
+- `Install AI protocol for agents` / `Remove AI protocol from agent files` — manage the discovery blocks in `AGENTS.md` / `CLAUDE.md`
 - `Pause recording` / `Resume recording` — temporarily stop producing feed events (the baseline is still kept up to date, so nothing is misreported later)
 - `Browse recent changes` — modal browser over the most recent events, filterable by file path
 - `Check feed health` — self-diagnostic (seq continuity, duplicates, cursor sanity, `feed-state.json` consistency) with a report modal
@@ -145,7 +145,7 @@ The status bar shows the current mode: ✍ recording · ⏸ standby/paused · �
 | Retention days / max entries | 90 / 50000 | Log rotation, whichever limit hits first |
 | Baseline flush interval | 300 s | Baseline persistence period |
 | Auto-install AI protocol on first run | on | Install the protocol block on first enable |
-| Sync AGENTS.md / CLAUDE.md / GEMINI.md | on | Per-file install targets |
+| Sync AGENTS.md / Sync CLAUDE.md | on | Per-file install targets |
 | Auto-sync protocol block | on | Refresh installed blocks after plugin updates |
 
 ## Privacy
