@@ -34,4 +34,31 @@ describe('EventFeed', () => {
     expect(feed.peekNextSeq()).toBe(51);
     expect(feed.pending).toBe(1);
   });
+
+  it('超过队列上限：清空缓冲并注入 resync 通知读者，随后继续正常接收', () => {
+    const feed = new EventFeed(0, 3);
+    feed.push('create', 'a.md');
+    feed.push('create', 'b.md');
+    feed.push('create', 'c.md'); // 达到上限
+    feed.push('create', 'd.md'); // 触发溢出：丢 a/b/c，注入 resync，再收 d
+    feed.push('create', 'e.md');
+    const drained = feed.drain();
+    expect(drained[0].op).toBe('resync');
+    expect(drained[0].source).toBe('system');
+    expect(drained.slice(1).map(e => e.path)).toEqual(['d.md', 'e.md']);
+    expect(feed.pending).toBe(0);
+  });
+
+  it('drain 后溢出标记复位，可再次缓冲', () => {
+    const feed = new EventFeed(0, 2);
+    feed.push('create', 'a.md');
+    feed.push('create', 'b.md');
+    feed.push('create', 'c.md'); // 溢出
+    feed.drain();
+    feed.push('create', 'x.md');
+    feed.push('create', 'y.md');
+    feed.push('create', 'z.md'); // 再次溢出 → 再次 resync
+    const drained = feed.drain();
+    expect(drained[0].op).toBe('resync');
+  });
 });

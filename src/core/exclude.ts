@@ -31,12 +31,23 @@ export function globToRegExp(glob: string): RegExp {
   return new RegExp('^' + re + '$');
 }
 
+/** 编译缓存：同一 glob 表达式只编译一次（isExcluded 在事件高频路径被反复调用） */
+const globCache = new Map<string, RegExp>();
+
+export function compileGlob(glob: string): RegExp {
+  const cached = globCache.get(glob);
+  if (cached !== undefined) return cached;
+  const re = globToRegExp(glob);
+  globCache.set(glob, re);
+  return re;
+}
+
 export function isExcluded(path: string, opts: ExcludeOptions): boolean {
   const cfg = opts.configDir.replace(/\/+$/, '');
   if (path === cfg || path.startsWith(cfg + '/')) return true;
   return opts.extraGlobs.some(g => {
     const t = g.trim();
-    return t.length > 0 && globToRegExp(t).test(path);
+    return t.length > 0 && compileGlob(t).test(path);
   });
 }
 
