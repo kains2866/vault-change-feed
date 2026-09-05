@@ -67,6 +67,10 @@ const strings = {
     en: 'vault-change-feed: {count} change(s) copied',
     zh: 'vault-change-feed：已复制 {count} 条变更',
   },
+  noticeCopiedTruncated: {
+    en: 'vault-change-feed: copied first {count} change(s); the rest stay unread — run the command again to continue',
+    zh: 'vault-change-feed：已复制前 {count} 条变更；其余保持未读——再次运行命令可继续',
+  },
   noticeStandby: {
     en: 'vault-change-feed: another Obsidian instance is recording changes; this instance is standing by',
     zh: 'vault-change-feed：另一个 Obsidian 实例正在记录变更，本实例待机中',

@@ -92,6 +92,8 @@ Claude Code (`hooks.SessionStart` in `~/.claude/settings.json`):
 
 `--reader` is the agent's stable cursor name. Use an absolute `node` path.
 
+Optional `--max-events=N` (default 200) caps how many merged events are injected per session start. If more changes are pending, only the first N are injected, the cursor advances only to the injected ones (partial consumption), and a hint reports the remainder — rerunning the hook (next session) consumes them. This prevents a long gap from blowing the context window and silently losing changes to a hook timeout.
+
 ## Protocol for AI agents (this README is the interface doc)
 
 This vault is tracked by the **vault-change-feed** Obsidian plugin. Before editing notes, catch up on what the user changed since your last visit:

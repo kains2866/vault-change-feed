@@ -13,18 +13,26 @@
  *
  * --format=kimi   输出 {"message": "..."}（Kimi Code 从 message 读取文本）
  * --format=claude 输出 {"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": "..."}}
+ * --max-events=N  单次注入的合并事件数上限（默认 200）。超限时只注入前 N 条，
+ *                 游标仅推进到已注入的最后一条（部分消费），剩余下次会话继续，
+ *                 避免长间隔后输出超时被丢弃导致变更静默丢失。
  */
 import { existsSync, readFileSync, readdirSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
 const DEFAULT_CONFIG_DIR = '.obsidian';
 const PLUGIN_ID = 'vault-change-feed';
+const DEFAULT_MAX_EVENTS = 200;
 
 function parseArgs() {
-  const args = { reader: 'agent', format: 'kimi' };
+  const args = { reader: 'agent', format: 'kimi', maxEvents: DEFAULT_MAX_EVENTS };
   for (const a of process.argv.slice(2)) {
     if (a.startsWith('--reader=')) args.reader = a.slice('--reader='.length);
     if (a.startsWith('--format=')) args.format = a.slice('--format='.length);
+    if (a.startsWith('--max-events=')) {
+      const n = Number(a.slice('--max-events='.length));
+      if (Number.isFinite(n) && n >= 1) args.maxEvents = Math.floor(n);
+    }
   }
   return args;
 }
@@ -171,7 +179,7 @@ function formatEvent(e) {
 }
 
 function main() {
-  const { reader, format } = parseArgs();
+  const { reader, format, maxEvents } = parseArgs();
   const payload = readStdin();
   const cwd = typeof payload.cwd === 'string' ? payload.cwd : process.cwd();
 
@@ -192,8 +200,19 @@ function main() {
   const minSeq = Math.min(...events.map((e) => e.seq));
   const stale = cursor > 0 && minSeq > cursor + 1;
 
-  // 推进游标（事件已注入上下文，视为已读）：只改自己的 key，原子写
-  cursors[reader] = maxSeq;
+  // 合并 + 注入上限：超限只注入前 N 条，游标只推进到已注入的最后一条（部分消费），
+  // 剩余下次会话继续——防止长间隔后单次输出超时被丢弃导致变更静默丢失
+  const merged = mergeEvents(unread);
+  const cap = maxEvents;
+  const truncated = merged.length > cap;
+  const injected = truncated ? merged.slice(0, cap) : merged;
+  // 全部事件被窗口合并丢弃（如建了又删）时也推进到 maxSeq，避免死循环重读
+  const advanceSeq =
+    injected.length > 0 ? injected[injected.length - 1].seq : truncated ? 0 : maxSeq;
+  const rawRemaining = truncated ? unread.filter((e) => e.seq > advanceSeq).length : 0;
+
+  // 推进游标（已注入事件视为已读）：只改自己的 key，原子写
+  cursors[reader] = Math.max(cursor, advanceSeq);
   writeFileSync(cursorsPath + '.tmp', JSON.stringify(cursors, null, 2));
   renameSync(cursorsPath + '.tmp', cursorsPath);
 
@@ -204,7 +223,12 @@ function main() {
   if (stale) {
     lines.push('WARNING: log was rotated and you missed events — do a FULL vault rescan instead of trusting this list.');
   }
-  for (const e of mergeEvents(unread)) lines.push(formatEvent(e));
+  for (const e of injected) lines.push(formatEvent(e));
+  if (rawRemaining > 0) {
+    lines.push(
+      `…and ${rawRemaining} more change event(s) remain unread (cap ${cap}); rerun this hook or read the changelog directly to consume them.`,
+    );
+  }
   lines.push('stat +A/-R = lines added/removed; null = open the file to see. Full protocol: the vault-change-feed block in AGENTS.md.');
   const text = lines.join('\n');
 

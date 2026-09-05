@@ -780,12 +780,21 @@ export default class VaultChangeFeedPlugin extends Plugin {
   }
 
   private async copyUnread(): Promise<void> {
+    const MAX_COPY_EVENTS = 2000;
     const res = await getChanges(this.io, this.feedPaths(), 'manual');
+    const truncated = res.events.length > MAX_COPY_EVENTS;
+    const shown = truncated ? res.events.slice(0, MAX_COPY_EVENTS) : res.events;
     const header = res.stale ? 'STALE: log truncated, full vault rescan advised.\n' : '';
-    const body = res.events.length > 0 ? formatEvents(res.events) : '(no changes)';
-    await navigator.clipboard.writeText(header + body);
-    await markRead(this.io, this.feedPaths(), 'manual', res.latestSeq);
-    new Notice(t('noticeCopied', { count: res.events.length }));
+    const body = shown.length > 0 ? formatEvents(shown) : '(no changes)';
+    const tail = truncated
+      ? `\n…and ${res.events.length - shown.length} merged change(s) remain unread (clipboard cap ${MAX_COPY_EVENTS}).`
+      : '';
+    await navigator.clipboard.writeText(header + body + tail);
+    // 与 hook 同策略：只把已复制部分标记已读，剩余下次命令继续消费
+    await markRead(this.io, this.feedPaths(), 'manual', truncated ? shown[shown.length - 1].seq : res.latestSeq);
+    new Notice(
+      truncated ? t('noticeCopiedTruncated', { count: shown.length }) : t('noticeCopied', { count: res.events.length }),
+    );
   }
 
   onunload(): void {

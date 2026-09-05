@@ -81,6 +81,8 @@ Claude Code（`~/.claude/settings.json` 的 `hooks.SessionStart`）：
 
 `--reader` 为该 agent 的固定游标名；建议用 `node` 的绝对路径。
 
+可选 `--max-events=N`（默认 200）：限制每次会话注入的合并事件数。未读更多时只注入前 N 条，游标只推进到已注入部分（部分消费）并提示剩余——下次会话运行 hook 继续消费，避免长时间未用后单次注入超限被丢弃、变更静默丢失。
+
 ## 给 AI agent 的协议（README 即接口文档）
 
 This vault is tracked by the **vault-change-feed** Obsidian plugin. Before editing notes, catch up on what the user changed since your last visit:

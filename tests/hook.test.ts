@@ -30,8 +30,8 @@ function cleanup(f: Fixture): void {
   rmSync(f.root, { recursive: true, force: true });
 }
 
-function runHook(cwd: string, reader: string): { status: number | null; stdout: string } {
-  const res = spawnSync(process.execPath, [HOOK, `--reader=${reader}`, '--format=kimi'], {
+function runHook(cwd: string, reader: string, extra: string[] = []): { status: number | null; stdout: string } {
+  const res = spawnSync(process.execPath, [HOOK, `--reader=${reader}`, '--format=kimi', ...extra], {
     input: JSON.stringify({ cwd }),
     encoding: 'utf8',
   });
@@ -100,6 +100,78 @@ describe('vault-feed-hook 位置发现', () => {
       expect(stdout).toBe('');
     } finally {
       rmSync(outside, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('vault-feed-hook 注入上限与部分消费', () => {
+  const many = Array.from({ length: 250 }, (_, i) => ({
+    seq: i + 1,
+    ts: 1000 + i,
+    op: 'create' as const,
+    path: `f${i + 1}.md`,
+    stat: { added: 1, removed: 0 },
+    source: 'live' as const,
+  }));
+
+  it('超限只注入前 200 条，游标部分推进并提示剩余', () => {
+    const f = makeVault('.obsidian', many);
+    try {
+      const { status, stdout } = runHook(f.root, 'agent-h1');
+      expect(status).toBe(0);
+      const msg = (JSON.parse(stdout) as { message: string }).message;
+      expect(msg).toContain('250 change event(s)');
+      expect(msg).toContain('…and 50 more change event(s) remain unread');
+      // 游标只推进到注入的最后一条（seq 200）
+      expect(readCursors(f.cursorsPath)['agent-h1']).toBe(200);
+    } finally {
+      cleanup(f);
+    }
+  });
+
+  it('部分消费后再次运行可继续消费剩余并推进到最新', () => {
+    const f = makeVault('.obsidian', many);
+    try {
+      const first = runHook(f.root, 'agent-h2');
+      expect(first.status).toBe(0);
+      expect(readCursors(f.cursorsPath)['agent-h2']).toBe(200);
+
+      const second = runHook(f.root, 'agent-h2');
+      expect(second.status).toBe(0);
+      const msg = (JSON.parse(second.stdout) as { message: string }).message;
+      expect(msg).toContain('50 change event(s)');
+      expect(msg).not.toContain('remain unread');
+      expect(readCursors(f.cursorsPath)['agent-h2']).toBe(250);
+    } finally {
+      cleanup(f);
+    }
+  });
+
+  it('--max-events 可自定义上限', () => {
+    const f = makeVault('.obsidian', many);
+    try {
+      const { status, stdout } = runHook(f.root, 'agent-h3', ['--max-events=10']);
+      expect(status).toBe(0);
+      const msg = (JSON.parse(stdout) as { message: string }).message;
+      expect(msg).toContain('240 more change event(s) remain unread');
+      expect(readCursors(f.cursorsPath)['agent-h3']).toBe(10);
+    } finally {
+      cleanup(f);
+    }
+  });
+
+  it('窗口内建了又删（合并为空）也推进到 maxSeq，不死循环', () => {
+    const windowed = [
+      { seq: 1, ts: 1000, op: 'create' as const, path: 'tmp.md', stat: { added: 1, removed: 0 }, source: 'live' as const },
+      { seq: 2, ts: 1001, op: 'delete' as const, path: 'tmp.md', stat: null, source: 'live' as const },
+    ];
+    const f = makeVault('.obsidian', windowed);
+    try {
+      const { status } = runHook(f.root, 'agent-h4');
+      expect(status).toBe(0);
+      expect(readCursors(f.cursorsPath)['agent-h4']).toBe(2);
+    } finally {
+      cleanup(f);
     }
   });
 });
