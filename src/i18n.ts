@@ -155,6 +155,10 @@ const strings = {
     en: 'vault-change-feed: recording disabled on this device',
     zh: 'vault-change-feed：已停用本机记录',
   },
+  noticeV2Migrated: {
+    en: 'vault-change-feed: migrated old change log to per-device layout (v2); old files backed up',
+    zh: 'vault-change-feed：旧日志已迁移为分设备布局（v2），原文件已备份',
+  },
   // 设置页
   sTrackedExtsName: { en: 'Tracked text extensions', zh: '跟踪的文本扩展名' },
   sTrackedExtsDesc: {

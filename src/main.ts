@@ -572,6 +572,8 @@ export default class VaultChangeFeedPlugin extends Plugin {
     }
     // 清理崩溃/同步中断遗留的孤儿 .tmp（Windows rename 失败、同步副本等场景）
     await this.cleanupOrphanTmp();
+    // v1 单文件布局 → v2 分设备布局：一次性转换（幂等：转换后旧文件即删除）
+    await this.migrateLegacyIfPresent();
 
     // seq 恢复：无条件与本设备日志尾部取 max，防 data.json 回退导致编号倒退
     const r = await readLog(this.io, this.devEventsFile());
@@ -781,6 +783,69 @@ export default class VaultChangeFeedPlugin extends Plugin {
       } catch {
         // 忽略
       }
+    }
+  }
+
+  /**
+   * v1 单文件 → v2 分设备：一次性迁移。
+   * 触发：数据目录仍存在旧 changelog.jsonl。转换后备份并删除旧布局文件（幂等）；
+   * 历史事件归入本设备日志（保留原 seq），旧基线整体转为本设备基线以保留对账能力；
+   * 历史行无 ch（当时未记录），读取去重对它们不生效（文档已知限制）。
+   */
+  private async migrateLegacyIfPresent(): Promise<void> {
+    try {
+      if (!(await this.io.exists(LOG_FILE))) return;
+      const backupDir = `v1-backup-${Date.now()}`;
+      await this.io.mkdir(backupDir);
+      const legacyFiles = [LOG_FILE, CURSORS_FILE, BASELINE_FILE, FEED_STATE_FILE];
+      for (const f of legacyFiles) {
+        try {
+          if (!(await this.io.exists(f))) continue;
+          const name = f.includes('/') ? f.slice(f.lastIndexOf('/') + 1) : f;
+          if (f === BASELINE_FILE) {
+            await this.io.writeBinary(`${backupDir}/${name}`, await this.io.readBinary(f));
+          } else {
+            await this.io.write(`${backupDir}/${name}`, await this.io.read(f));
+          }
+        } catch {
+          // 单项备份失败不阻断迁移
+        }
+      }
+
+      // 旧日志事件归属本设备（保留原 seq；无 ch → null）
+      const { events } = await readLog(this.io, LOG_FILE);
+      if (events.length > 0) {
+        const existing = await readLog(this.io, this.devEventsFile());
+        if (existing.events.length === 0) {
+          const stamped = events.map(e => ({ ...e, device: this.deviceId, ch: e.ch ?? null }));
+          await appendEvents(this.io, this.devEventsFile(), stamped);
+        }
+      }
+
+      // 旧基线转为本设备基线（保留全文/预筛与对账能力）
+      if (await this.io.exists(BASELINE_FILE)) {
+        try {
+          if (!(await this.io.exists(this.devBaselineFile()))) {
+            await this.io.writeBinary(this.devBaselineFile(), await this.io.readBinary(BASELINE_FILE));
+          }
+        } catch {
+          // 忽略：损坏基线后续走 resync
+        }
+      }
+
+      // 移除旧布局（含各自 .tmp）
+      for (const f of legacyFiles) {
+        for (const p of [f, `${f}.tmp`]) {
+          try {
+            if (await this.io.exists(p)) await this.io.remove(p);
+          } catch {
+            // 忽略
+          }
+        }
+      }
+      new Notice(t('noticeV2Migrated'));
+    } catch (err) {
+      console.error('vault-change-feed v2 migration failed', err);
     }
   }
 
