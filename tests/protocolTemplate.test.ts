@@ -14,17 +14,20 @@ describe('renderProtocolBlock', () => {
     expect(renderProtocolBlock('.obsidian')).toBe(renderProtocolBlock('.obsidian'));
   });
 
-  it('措辞强化：包含稳定 id、只改自己 key、禁止直写 cursors.json 的硬约束', () => {
+  it('v2 关键语义：每 reader 游标文件 / 设备索引 / events 目录 / ch 去重', () => {
     const out = renderProtocolBlock('.obsidian');
-    expect(out).toContain('ONLY your own reader key');
-    expect(out).toContain('NEVER write `cursors.json` directly');
-    expect(out).toContain('stable id');
-    expect(hasBlock(out)).toBe(true);
+    expect(out).toContain('cursors/<reader>.json');
+    expect(out).toContain('devices.json');
+    expect(out).toContain('devices[].id');
+    expect(out).toContain('events/<deviceId>.jsonl');
+    expect(out).toContain('drop duplicates');
+    expect(out).toContain('stable reader id');
+    expect(out).toContain('full vault rescan');
   });
 
   it('自定义 configDir 会替换协议中的路径', () => {
     const out = renderProtocolBlock('.myconfig');
-    expect(out).toContain('.myconfig/plugins/vault-change-feed/changelog.jsonl');
+    expect(out).toContain('.myconfig/plugins/vault-change-feed/devices.json');
     expect(out).not.toContain('.obsidian/');
   });
 });
