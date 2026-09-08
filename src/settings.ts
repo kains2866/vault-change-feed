@@ -21,6 +21,8 @@ export interface VaultChangeFeedSettings {
   autoInstallProtocol: boolean;
   /** 暂停记录（命令 Pause recording 切换）；暂停窗口内不产生 feed 事件 */
   recordingPaused: boolean;
+  /** 本机停用记录（多设备云同步时只保留一台开启）：关闭后本实例完全不写 feed */
+  recordingDisabled: boolean;
 }
 
 export const DEFAULT_SETTINGS: VaultChangeFeedSettings = {
@@ -36,6 +38,7 @@ export const DEFAULT_SETTINGS: VaultChangeFeedSettings = {
   autoSyncProtocol: true,
   autoInstallProtocol: true,
   recordingPaused: false,
+  recordingDisabled: false,
 };
 
 export function parseExtensions(s: string): string[] {

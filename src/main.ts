@@ -40,7 +40,7 @@ import { decideLock, parseLock, verifyOwnership, WriterLock } from './core/write
 import { detectSync, SyncSignals } from './core/syncDetect';
 import { hasBlock, upsertBlock, removeBlock } from './core/protocolBlock';
 import { renderProtocolBlock } from './core/protocolTemplate';
-import { getChanges, markRead, formatEvents, FeedPaths, GetChangesOptions } from './protocol';
+import { getChanges, markRead, formatEvents, mergeEvents, FeedPaths, GetChangesOptions } from './protocol';
 import type { ChangeEvent } from './core/types';
 import {
   VaultChangeFeedSettings,
@@ -311,14 +311,56 @@ export default class VaultChangeFeedPlugin extends Plugin {
   /**
    * 启动入口：竞争写者锁。抢到并验证后初始化；否则进入待机——不注册 vault 监听、
    * 不写任何文件，周期性检查锁以便接管。只读接口（api.getChanges）待机下仍可用。
+   * 「仅本机记录」关闭时：本实例不写 feed、也不参与接管轮询（多设备同步场景用）。
    */
   private async startFeed(): Promise<void> {
+    if (this.settings.recordingDisabled) {
+      this.ensureLocalRecordingOff();
+      return;
+    }
     const existing = await this.readLock();
     if (decideLock(existing, this.deviceId, Date.now()) === 'standby' || !(await this.acquireLock())) {
       this.enterStandby();
       return;
     }
     await this.initFeed();
+  }
+
+  /** 设置切换后应用记录策略（设置页调用；public 供 SettingTab 使用） */
+  async applyRecordingMode(): Promise<void> {
+    if (this.settings.recordingDisabled) {
+      // 关：若已是写者/待机，先清理（写者 flush + 释放锁），再进入本地停用
+      if (this.writerLive) {
+        await this.flushEvents();
+        this.teardownWriter();
+        const lock = await this.readLock();
+        if (lock !== null && lock.deviceId === this.deviceId) {
+          try {
+            await this.io.remove(LOCK_FILE);
+          } catch {
+            // 忽略
+          }
+        }
+      }
+      if (this.standbyTimer !== null) {
+        window.clearInterval(this.standbyTimer);
+        this.standbyTimer = null;
+      }
+      this.updateStatusBar();
+      new Notice(t('noticeRecordingOff'));
+    } else if (!this.writerLive && this.standbyTimer === null) {
+      // 开：从停用状态恢复 → 重新走启动/接管流程
+      await this.startFeed();
+    }
+  }
+
+  /** 本地停用：清空接管轮询、状态栏显示 off（只读 API 仍可用） */
+  private ensureLocalRecordingOff(): void {
+    if (this.standbyTimer !== null) {
+      window.clearInterval(this.standbyTimer);
+      this.standbyTimer = null;
+    }
+    this.updateStatusBar();
   }
 
   /** 进入待机（尚未成为写者）：展示提示并启动接管轮询 */
@@ -983,11 +1025,14 @@ export default class VaultChangeFeedPlugin extends Plugin {
     this.statusBarEl = el;
   }
 
-  /** 状态栏刷新：纯文本模式（写者/暂停/待机）+ 活动指示灯 + 详情 tooltip */
+  /** 状态栏刷新：纯文本模式（停用/写者/暂停/待机）+ 活动指示灯 + 详情 tooltip */
   private updateStatusBar(): void {
     const label = this.statusLabelEl;
     if (!label) return;
-    if (this.writerLive) {
+    if (this.settings.recordingDisabled && !this.writerLive) {
+      label.textContent = 'VCF · off';
+      label.title = t('statusOffTooltip');
+    } else if (this.writerLive) {
       if (this.settings.recordingPaused) {
         label.textContent = 'VCF · paused';
         label.title = t('statusPausedTooltip');
@@ -1163,6 +1208,7 @@ class FeedHealthModal extends Modal {
 /** 事件浏览器弹窗：最近事件 + 路径筛选 */
 class FeedBrowserModal extends Modal {
   private filter = '';
+  private merged = true; // 默认显示合并视图（同文件累计），可切换原始流
 
   constructor(app: App, private events: ChangeEvent[]) {
     super(app);
@@ -1174,12 +1220,36 @@ class FeedBrowserModal extends Modal {
     contentEl.empty();
     const input = contentEl.createEl('input', { type: 'text', placeholder: t('browsePlaceholder'), cls: 'vcf-modal-input' });
     const pre = contentEl.createEl('pre', { cls: 'vcf-modal-pre' });
+
+    // 合并/原始视图切换
+    const toolbar = contentEl.createDiv({ cls: 'vcf-modal-toolbar' });
+    const btnMerged = toolbar.createEl('button', { text: t('browseModeMerged'), cls: 'vcf-mode-btn' });
+    const btnRaw = toolbar.createEl('button', { text: t('browseModeRaw'), cls: 'vcf-mode-btn' });
+    const syncActive = (): void => {
+      btnMerged.toggleClass('is-active', this.merged);
+      btnRaw.toggleClass('is-active', !this.merged);
+    };
+    btnMerged.addEventListener('click', () => {
+      this.merged = true;
+      syncActive();
+      render();
+    });
+    btnRaw.addEventListener('click', () => {
+      this.merged = false;
+      syncActive();
+      render();
+    });
+
     const render = (): void => {
       const q = this.filter.trim().toLowerCase();
       const shown = q ? this.events.filter(e => e.path.toLowerCase().includes(q)) : this.events;
-      const rows = formatEvents(shown);
-      pre.setText(`${shown.length} / ${this.events.length} events\n${rows}`);
+      const rows = this.merged ? mergeEvents(shown) : shown;
+      const head = this.merged
+        ? `${rows.length} merged / ${shown.length} raw`
+        : `${rows.length} raw events`;
+      pre.setText(`${head}\n${formatEvents(rows)}`);
     };
+    syncActive();
     input.addEventListener('input', () => {
       this.filter = input.value;
       render();
@@ -1207,6 +1277,11 @@ class VaultChangeFeedSettingTab extends PluginSettingTab {
     const minErr = (min: number) => (v: number): string | undefined =>
       Number.isFinite(v) && v >= min ? undefined : t('errMin', { min });
     const items: SettingDefinitionItem[] = [
+      {
+        name: t('sRecordHereName'),
+        desc: t('sRecordHereDesc'),
+        control: { type: 'toggle', key: 'recordingDisabled' },
+      },
       {
         name: t('sTrackedExtsName'),
         desc: t('sTrackedExtsDesc'),
@@ -1282,6 +1357,17 @@ class VaultChangeFeedSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
     const s = this.plugin.settings;
+
+    new Setting(containerEl)
+      .setName(t('sRecordHereName'))
+      .setDesc(t('sRecordHereDesc'))
+      .addToggle(t =>
+        t.setValue(s.recordingDisabled).onChange(async v => {
+          s.recordingDisabled = v;
+          await this.plugin.saveSettings();
+          await this.plugin.applyRecordingMode();
+        }),
+      );
 
     new Setting(containerEl)
       .setName(t('sTrackedExtsName'))

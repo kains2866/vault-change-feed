@@ -117,6 +117,8 @@ const strings = {
     zh: 'vault-change-feed：读取变更日志失败，详情见控制台',
   },
   browseTitle: { en: 'Recent vault changes', zh: '最近的库变更' },
+  browseModeMerged: { en: 'Merged', zh: '合并视图' },
+  browseModeRaw: { en: 'Raw', zh: '原始视图' },
   browsePlaceholder: {
     en: 'Filter by file path…',
     zh: '按文件路径筛选…',
@@ -140,6 +142,19 @@ const strings = {
     zh: 'vault-change-feed：启动中…',
   },
   errMin: { en: 'must be at least {min}', zh: '须不小于 {min}' },
+  sRecordHereName: { en: 'Disable recording on this device', zh: '停用本机记录' },
+  sRecordHereDesc: {
+    en: 'When ON, this device stops writing the feed. For cloud-synced multi-device vaults keep it OFF only on the one device that should record — others ON — to avoid duplicate events.',
+    zh: '开启后本机不再写入 feed。多设备云同步时，只在你希望记录的那台设备保持此项关闭、其余设备开启，避免重复事件与 seq 冲突。',
+  },
+  statusOffTooltip: {
+    en: 'vault-change-feed: recording disabled on this device',
+    zh: 'vault-change-feed：本设备已停用记录',
+  },
+  noticeRecordingOff: {
+    en: 'vault-change-feed: recording disabled on this device',
+    zh: 'vault-change-feed：已停用本机记录',
+  },
   // 设置页
   sTrackedExtsName: { en: 'Tracked text extensions', zh: '跟踪的文本扩展名' },
   sTrackedExtsDesc: {

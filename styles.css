@@ -47,3 +47,22 @@
 .vcf-modal-btn {
   margin-top: 12px;
 }
+
+/* 浏览弹窗：合并/原始视图切换 */
+.vcf-modal-toolbar {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.vcf-mode-btn {
+  font-size: 12px;
+  padding: 2px 10px;
+  cursor: pointer;
+}
+
+.vcf-mode-btn.is-active {
+  color: var(--text-on-accent);
+  background-color: var(--interactive-accent);
+}
+
