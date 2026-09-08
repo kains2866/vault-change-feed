@@ -30,24 +30,29 @@ AI 不知道你背着它改了哪些笔记。全库扫描太贵；不问又会�
 
 ## 工作原理
 
-- 运行期：监听 Obsidian 的 create / modify / delete / rename 事件，行级 diff 统计增删行数
-- 启动时：与上次基线快照对账，补记 Obsidian 关闭期间（手机端、iCloud 同步、CLI 工具）发生的变更；同哈希的删+建自动识别为 rename（配对基于内容哈希；二进制文件经 iCloud 重新下载后 mtime 变化，可能退化为 delete+create 两条事件）
+- **分设备日志（v2）**：每台运行本插件的设备把事件写入**自己的日志**（各自独立 seq）——多设备可并行编辑同一 vault，无序号冲突；同一物理变更被多台设备看到时，读取侧按内容哈希（`ch`）去重为一条
+- 运行期：本设备监听 Obsidian 的 create / modify / delete / rename 事件，行级 diff 统计增删行数
+- 启动时：与本设备基线快照对账，补记 Obsidian 关闭期间（其他设备、iCloud 同步、CLI 工具）发生的变更；同哈希的删+建自动识别为 rename
 - 数据全部本地，存放在 `.obsidian/plugins/vault-change-feed/`：
-  - `changelog.jsonl` — 事件流，一行一条
-  - `cursors.json` — 各读者的读取游标
-  - `baseline.gz` — 内容基线快照（用于 diff 与对账）
-  - `feed-state.json` — 轻量状态端点（`{formatVersion, minSeq, maxSeq, count, updatedAt}`），agent 先读它即可判断是否有新事件、免全量解析日志；`formatVersion` 同时锚定未来格式演进
+  - `devices.json` — 已写入日志的设备清单
+  - `events/<deviceId>.jsonl` — 各设备事件流（每设备独立 seq）
+  - `state/<deviceId>.json` — 各设备轻量状态端点（`{minSeq, maxSeq, count, updatedAt}`），agent 先读它即可判断是否有新事件
+  - `cursors/<reader>.json` — 每读者独立游标文件（`{deviceId: lastSeq}`）
+  - `baseline-<deviceId>.gz` — 各设备内容基线（用于 diff 与对账）
 
-注意：插件已内置**待机保护**——多实例通过心跳写者锁（`writer.lock`）协调，只有持锁实例记录变更，其余实例待机（只读 API 仍可用），锁 90 秒过期后待机实例自动接管。但仍建议同一 vault 同一时间只在一个 Obsidian 实例中启用本插件。
+写者锁（`writer.lock`）只用于串行化**同一设备**上的多个 Obsidian 实例；跨设备并行写各写各的文件，互不阻塞。
 
 ## 事件格式
 
 ```json
-{"seq": 1284, "ts": 1785000000000, "op": "modify", "path": "ML/过拟合.md", "stat": {"added": 12, "removed": 3}, "source": "live"}
+{"device": "8f3a-…", "seq": 1284, "ts": 1785000000000, "op": "modify", "path": "ML/过拟合.md", "ch": "0a9b8c7d…", "stat": {"added": 12, "removed": 3}, "source": "live"}
 ```
 
+- `device` + `seq`：序号只在**同一设备内**递增，事件唯一键为 `(device, seq)`
 - `op`：`create` / `modify` / `delete` / `rename`（带 `oldPath`）/ `resync`（基线重建，见到它建议全量重扫）
+- `ch`：create/modify 记录后文件内容哈希（文本为 16 位 hex；旧数据可能没有）——读取侧按 `(path, op, ch)` 去重，消除"同一变更被多台设备各记一条"
 - `stat`：`{added, removed}` 增删行数；`null` 表示「变了但幅度未知，请打开看」（二进制、超大文件）
+- `source`：`live` / `reconcile`（启动补记）/ `system`
 - `source`：`live` / `reconcile`（启动补记）/ `system`
 
 ## 让 AI 发现 feed
@@ -88,26 +93,27 @@ Claude Code（`~/.claude/settings.json` 的 `hooks.SessionStart`）：
 
 This vault is tracked by the **vault-change-feed** Obsidian plugin. Before editing notes, catch up on what the user changed since your last visit:
 
-1. Read `.obsidian/plugins/vault-change-feed/cursors.json` and find your reader name (use your agent id, e.g. `"kimi-cli"`; absent means cursor `0`).
-   - 可选快速路径：先读 `.obsidian/plugins/vault-change-feed/feed-state.json`（很小的 `{formatVersion, minSeq, maxSeq, count}`）；若 `maxSeq <= 你的游标` 则无新事件，可跳过日志。状态可能滞后数秒。
-2. Read `.obsidian/plugins/vault-change-feed/changelog.jsonl` (one JSON event per line) and take events with `seq` greater than your cursor.
-   - If your cursor is `> 0` and the smallest `seq` in the file is greater than `cursor + 1`, the log was rotated and you missed events — stop and do a full vault rescan instead.
-   - If you see an event with `op: "resync"`, the plugin rebuilt its baseline — a full rescan is advised.
-3. Event shape: `{"seq", "ts", "op": "create"|"modify"|"delete"|"rename"|"resync", "path", "oldPath"?, "stat": {"added", "removed"} | null, "source"}`. `stat: null` means "changed, magnitude unknown — open the file if you care".
-4. After processing, write the largest `seq` you saw back to `cursors.json` under your reader name. Write atomically: write `cursors.json.tmp`, then rename it to `cursors.json`.
+1. Read `.obsidian/plugins/vault-change-feed/cursors/<reader>.json` — 你的游标文件 `{deviceId: lastSeq}`。请固定使用一个 reader 名（如你的 agent 名 `"claude-code"`）；文件不存在 = 每台设备游标均为 0。只写你自己的文件。
+2. Read `.obsidian/plugins/vault-change-feed/devices.json` → `devices[].id` 为所有已知写入设备。
+3. 对每台设备读 `.obsidian/plugins/vault-change-feed/events/<deviceId>.jsonl`（每行一个 JSON 事件），取该设备 `seq` 大于其游标的事件。
+   - 若某设备游标 > 0 且其最小 `seq` 大于 `游标+1` → 该日志轮转过、你漏了事件，停下做全量重扫。
+   - 见到 `op: "resync"` → 基线重建，建议全量重扫。
+   - `stat: null` 表示「变了但幅度未知，需要时打开文件看」。
+4. 合并成一条时间线：先按 (`ts`, `device`, `seq`) 排序，再做内容去重——带 `ch` 的 create/modify 事件，每个 (`path`, `op`, `ch`) 只保留第一条（同一物理修改可能被两台设备都记录）。
+5. 处理完后，把你的游标文件写为 `{deviceId: 该设备你实际读到的最大 seq}`；原子写：先写 `<file>.tmp` 再 rename 覆盖。绝不写超过你实际读到的 seq。
 
 Inside Obsidian, other plugins/scripts can use the JS API instead of files:
 
 ```js
 const api = app.plugins.plugins['vault-change-feed'].api;
-const { events, stale, latestSeq } = await api.getChanges('my-plugin');
+const { events, stale, perDevice } = await api.getChanges('my-plugin');
 // ...处理...
-await api.markRead('my-plugin', latestSeq);
+await api.markRead('my-plugin', perDevice);
 ```
 
-JS API 的 `getChanges` 默认把同一文件的未读事件合并为一条（`api.getChanges(name, { merge: false })` 可得原始流；不可无损合并的组除外，见下）。直接读 `changelog.jsonl` 的外部 agent 看到的是原始事件流，如需合并可自行按以下规则实现：
+JS API 的 `getChanges` 已做内容哈希去重，并默认把同一文件的未读事件合并为一条（`api.getChanges(name, { merge: false })` 可得去重后的原始流；不可无损合并的组除外，见下）。直接读各设备日志的外部 agent 看到的是原始事件流，如需合并可自行按以下规则实现：
 
-- 先按 `seq` 排序（容忍日志乱序），再按 `path` 分组（`resync` 不合并，原样保留）；合并产出的 `seq`/`ts` 取组内最大，`source` 取组内最后一条
+- 先按 (`ts`, `device`, `seq`) 排序并丢弃重复 (`path`,`op`,`ch`) 的 create/modify，再按 `path` 分组（`resync` 不合并，原样保留）；合并产出的 `seq`/`ts` 取组内最大，`device`/`source` 取组内最后一条
 - 窗口内 create 了又 delete → 整组丢弃；结尾是 delete 且组内含 rename → `delete`，path 取首个 rename 的 `oldPath`（不带 oldPath 字段，stat 取 delete 自身）；结尾是 delete → `delete`（stat 取最后一条 delete 自身）
 - 组内 delete 与 rename 交织且不属上一条 → 不合并，组内事件原样输出（任何合并都会丢某个路径的命运）
 - 删了又建 → `modify`（stat 为 null）；开头是 create → `create`；含 rename → `rename`（保留首个 rename 的 oldPath）；其余 → `modify`
@@ -119,7 +125,7 @@ JS API 的 `getChanges` 默认把同一文件的未读事件合并为一条（`a
 - `Install AI protocol for agents` / `Remove AI protocol from agent files` — 管理 AGENTS.md / CLAUDE.md 中的协议块。
 - `Pause recording` / `Resume recording` — 临时暂停产生 feed 事件（基线仍持续维护，恢复后不会误报）。
 - `Browse recent changes` — 最近事件浏览器（Modal，可按路径筛选）。
-- `Check feed health` — 自检弹窗：seq 连续性、重复/逆序、游标越界、feed-state 一致性。
+- `Check feed health` — 自检弹窗：各设备日志 seq 连续性、重复/逆序、状态文件一致性。
 
 状态栏显示 file-text 图标 + `VCF`（有变更落盘后约 10 秒内右侧亮 ●）；点击可弹出上述全部命令的快捷菜单，无需打开命令面板。
 
@@ -141,9 +147,9 @@ JS API 的 `getChanges` 默认把同一文件的未读事件合并为一条（`a
 ## 平台与兼容性说明
 
 - **已验证**：macOS 桌面端与移动端（文件操作全部走官方 vault adapter）。**Windows 尚未实机冒烟**——如发现问题请反馈；代码层已覆盖 Windows 常见坑（rename 覆盖失败、排除 glob 反斜杠分隔、崩溃/同步遗留的孤儿 `.tmp` 清理）。
-- **第三方同步（iCloud / Syncthing / Dropbox / OneDrive / git）**：写者锁只在本机实例间协调；真实多设备同步时锁文件本身有传播延迟，建议同一 vault **只在一台设备上启用记录**。插件启动时会对账补记"关闭期间/其他设备"产生的变更。
+- **第三方同步（iCloud / Syncthing / Dropbox / OneDrive / git）**：v2 起每台设备写入**自己的日志**，多设备可并行记录、无需指定单台写者；同一物理变更被多台看到时读取侧按内容哈希去重。Obsidian 关闭期间发生的变更，由任意设备下次启动对账补记。
 - **超大库**：基线按内容预算在内存保留全文（默认桌面 100MB / 移动端 20MB）。若同步很大的库，可在设置中调低预算以减少内存与同步流量。
-- **读者游标**：所有 AI reader 共享一个 `cursors.json`；并发 markRead 是 at-least-once 安全语义（最坏情况某 reader 重读），不会丢事件。
+- **读者游标**：每个 AI reader 使用独立的 `cursors/<reader>.json`（`{deviceId: lastSeq}`）——读者之间无互踩；仍为 at-least-once 语义（最坏情况某 reader 重读），事件不会丢。
 
 ## 隐私
 

@@ -41,23 +41,27 @@ Your AI assistant has no idea what you edited between sessions. Scanning the who
 
 ## How it works
 
-- **Live**: listens to Obsidian's create / modify / delete / rename events and computes line-level diff stats
-- **On startup**: reconciles against the last baseline snapshot to backfill changes made while Obsidian was closed. A delete+create pair with identical content hash is reported as a rename (binary files re-downloaded by iCloud get a fresh mtime and may degrade to delete+create)
+- **Per-device logs (v2)**: every device that runs the plugin appends to its OWN event log with an independent per-device `seq` — devices can edit the same vault in parallel with no sequence conflicts. A single physical change observed by more than one device is de-duplicated at read time by content hash (`ch`).
+- **Live**: listens to Obsidian's create / modify / delete / rename events on this device and computes line-level diff stats
+- **On startup**: reconciles against this device's last baseline snapshot to backfill changes made while Obsidian was closed (other devices' edits included). A delete+create pair with identical content hash is reported as a rename
 - **All data stays local**, under `<configDir>/plugins/vault-change-feed/`:
-  - `changelog.jsonl` — the event stream, one JSON event per line
-  - `cursors.json` — per-reader read cursors
-  - `baseline.gz` — content baseline snapshot (for diffs and reconciliation)
-  - `feed-state.json` — tiny status endpoint (`{formatVersion, minSeq, maxSeq, count, updatedAt}`) so agents can tell whether anything is new without reading the whole log; its `formatVersion` anchors future format evolution
+  - `devices.json` — which devices have written logs
+  - `events/<deviceId>.jsonl` — per-device event streams (each with its own `seq`)
+  - `state/<deviceId>.json` — tiny per-device status endpoint (`{minSeq, maxSeq, count, updatedAt}`) for quick "anything new?" checks
+  - `cursors/<reader>.json` — per-reader read cursors (`{deviceId: lastSeq}`)
+  - `baseline-<deviceId>.gz` — per-device content baselines (diffs and reconciliation)
 
-Note: the plugin has built-in **standby protection** — concurrent instances coordinate through a heartbeat writer lock (`writer.lock`); only the lock holder records, other instances stand by (read-only API still works) and automatically take over once the lock goes stale (90 s). Still, prefer running it in only **one Obsidian instance per vault at a time**.
+The writer lock (`writer.lock`) only serializes multiple Obsidian instances on the SAME device; across synced devices nothing blocks parallel writing — each device owns its own files.
 
 ## Event format
 
 ```json
-{"seq": 1284, "ts": 1785000000000, "op": "modify", "path": "ML/overfitting.md", "stat": {"added": 12, "removed": 3}, "source": "live"}
+{"device": "8f3a-…", "seq": 1284, "ts": 1785000000000, "op": "modify", "path": "ML/overfitting.md", "ch": "0a9b8c7d…", "stat": {"added": 12, "removed": 3}, "source": "live"}
 ```
 
+- `device` + `seq`: sequence numbers are unique per device only — identify an event by `(device, seq)`
 - `op`: `create` / `modify` / `delete` / `rename` (carries `oldPath`) / `resync` (baseline rebuilt — full rescan advised)
+- `ch`: content hash of the file after a `create`/`modify` (16 hex chars for text files; absent on legacy rows) — readers use `(path, op, ch)` to de-duplicate the same change seen by several devices
 - `stat`: `{added, removed}` line counts; `null` means "changed, magnitude unknown — open the file" (binaries, oversized files)
 - `source`: `live` / `reconcile` (startup backfill) / `system`
 
@@ -97,28 +101,29 @@ Optional `--max-events=N` (default 200) caps how many merged events are injected
 
 ## Protocol for AI agents (this README is the interface doc)
 
-This vault is tracked by the **vault-change-feed** Obsidian plugin. Before editing notes, catch up on what the user changed since your last visit:
+This vault is tracked by the **vault-change-feed** Obsidian plugin (v2, per-device logs). Before editing notes, catch up on what the user changed since your last visit:
 
-1. Read `.obsidian/plugins/vault-change-feed/cursors.json` and find your reader name (use your agent id, e.g. `"kimi-cli"`; absent means cursor `0`).
-   - Optional fast path: first read `.obsidian/plugins/vault-change-feed/feed-state.json` (tiny `{formatVersion, minSeq, maxSeq, count}`); if `maxSeq <= your cursor`, nothing is new — skip the log. It may be a few seconds stale.
-2. Read `.obsidian/plugins/vault-change-feed/changelog.jsonl` (one JSON event per line) and take events with `seq` greater than your cursor.
-   - If your cursor is `> 0` and the smallest `seq` in the file is greater than `cursor + 1`, the log was rotated and you missed events — stop and do a full vault rescan instead.
-   - If you see an event with `op: "resync"`, the plugin rebuilt its baseline — a full rescan is advised.
-3. Event shape: `{"seq", "ts", "op": "create"|"modify"|"delete"|"rename"|"resync", "path", "oldPath"?, "stat": {"added", "removed"} | null, "source"}`. `stat: null` means "changed, magnitude unknown — open the file if you care".
-4. After processing, write the largest `seq` you saw back to `cursors.json` under your reader name. Write atomically: write `cursors.json.tmp`, then rename it to `cursors.json`.
+1. Read `.obsidian/plugins/vault-change-feed/cursors/<reader>.json` — your cursor file `{deviceId: lastSeq}`. Use ONE stable reader id forever (e.g. your agent id like `"claude-code"`); a missing file means cursor 0 for every device. Only ever write YOUR file.
+2. Read `.obsidian/plugins/vault-change-feed/devices.json` → `devices[].id` lists every known writing device.
+3. For each device, read `.obsidian/plugins/vault-change-feed/events/<deviceId>.jsonl` (one JSON event per line) and take events with `seq` greater than that device's cursor.
+   - If that device's cursor is `> 0` and its smallest `seq` is greater than `cursor + 1`, that log was rotated and you missed events — stop and do a full vault rescan instead.
+   - An event with `op: "resync"` means the baseline was rebuilt — do a full rescan.
+   - `stat: null` means "changed, magnitude unknown — open the file if you care".
+4. Merge into one timeline: sort by (`ts`, `device`, `seq`), then de-duplicate — for `create`/`modify` events carrying a content hash `ch`, keep only the FIRST event per (`path`, `op`, `ch`): the same physical edit may be recorded by two devices.
+5. After processing, write your cursor file as `{deviceId: largestSeqYouReadForThatDevice}`. Write atomically: write `<file>.tmp` first, then rename it over the file. Never write a cursor larger than the largest `seq` you actually read for that device.
 
 Inside Obsidian, other plugins/scripts can use the JS API instead of files:
 
 ```js
 const api = app.plugins.plugins['vault-change-feed'].api;
-const { events, stale, latestSeq } = await api.getChanges('my-plugin');
+const { events, stale, perDevice } = await api.getChanges('my-plugin');
 // ...handle events...
-await api.markRead('my-plugin', latestSeq);
+await api.markRead('my-plugin', perDevice);
 ```
 
-The JS API's `getChanges` merges unread events per file by default (`api.getChanges(name, { merge: false })` returns the raw stream; groups that can't be merged losslessly are passed through, see below). External agents reading `changelog.jsonl` directly see the raw event stream and may implement the same merging:
+The JS API's `getChanges` already de-duplicates by content hash and merges unread events per file by default (`api.getChanges(name, { merge: false })` returns the de-duplicated raw stream; groups that can't be merged losslessly are passed through, see below). External agents reading the raw device logs may implement the same merging:
 
-- Sort by `seq` first (the log may be out of order), then group by `path` (`resync` is never merged); merged events take the group's max `seq`/`ts` and the last event's `source`
+- Sort by (`ts`, `device`, `seq`), drop duplicate (`path`, `op`, `ch`) create/modify events, then group by `path` (`resync` is never merged); merged events take the group's max `seq`/`ts` and the last event's `device`/`source`
 - Created and deleted within the window → group dropped; last event is `delete` and the group contains a rename → `delete` on the first rename's `oldPath` (no `oldPath` field, stat from the delete itself); last event is `delete` → `delete` (stat from the last delete)
 - Deletes and renames interleaved beyond the case above → not merged, group emitted as-is (any merge would lose some path's fate)
 - Deleted then re-created → `modify` (stat `null`); starts with create → `create`; contains a rename → `rename` (keeps the first rename's `oldPath`); otherwise → `modify`
@@ -130,7 +135,7 @@ The JS API's `getChanges` merges unread events per file by default (`api.getChan
 - `Install AI protocol for agents` / `Remove AI protocol from agent files` — manage the discovery blocks in `AGENTS.md` / `CLAUDE.md`
 - `Pause recording` / `Resume recording` — temporarily stop producing feed events (the baseline is still kept up to date, so nothing is misreported later)
 - `Browse recent changes` — modal browser over the most recent events, filterable by file path
-- `Check feed health` — self-diagnostic (seq continuity, duplicates, cursor sanity, `feed-state.json` consistency) with a report modal
+- `Check feed health` — self-diagnostic (per-device seq continuity, duplicates, out-of-order, state consistency) with a report modal
 
 The status bar shows a file-text icon + `VCF` (with a light that glows ● for ~10 s after user changes are recorded). Click it for a quick menu with all of the above commands — no command palette needed.
 
@@ -151,9 +156,9 @@ The status bar shows a file-text icon + `VCF` (with a light that glows ● for ~
 ## Platform & compatibility notes
 
 - **Tested**: macOS desktop and mobile (file operations go through the official vault adapter). **Windows** is not yet smoke-tested — please report any issue; code hardening already covers the usual Windows pitfalls (rename-overwrite failures, backslash separators in exclude globs, orphaned `.tmp` leftovers from crashes/sync).
-- **Third-party sync (iCloud / Syncthing / Dropbox / OneDrive / git)**: the writer lock only coordinates Obsidian instances *locally*. With real multi-device sync the lock file travels with latency, so enable this plugin on **one device at a time** for a vault. On startup, the plugin reconciles changes made while it was closed — changes from other devices are picked up then.
+- **Third-party sync (iCloud / Syncthing / Dropbox / OneDrive / git)**: since v2 every device appends to its OWN log, so multiple devices may write in parallel — no shared sequence, no single-writer election needed. The same physical edit seen by two devices is de-duplicated at read time by content hash. When Obsidian is closed, startup reconciliation on any device backfills changes it missed.
 - **Heavy vaults**: the baseline keeps text in memory up to the content budget (default 100 MB desktop / 20 MB mobile). If you sync a very large vault, lower the budget in settings to cut memory and sync traffic.
-- **Per-reader cursors**: all AI readers share one `cursors.json`; concurrent `markRead` is at-least-once safe (worst case: a reader re-reads), never loses events.
+- **Reader cursors**: each AI reader has its own `cursors/<reader>.json` (`{deviceId: lastSeq}`) — no contention between readers; at-least-once semantics still apply (worst case a reader re-reads), events are never lost.
 
 ## Privacy
 
