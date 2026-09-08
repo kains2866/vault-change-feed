@@ -23,7 +23,8 @@ function mergeGroup(group) {
         op: "delete",
         path: firstRename.oldPath ?? first.path,
         stat: last.stat,
-        source: last.source
+        source: last.source,
+        ...last.device !== void 0 ? { device: last.device } : {}
       }
     ];
   }
@@ -54,8 +55,12 @@ function mergeGroup(group) {
     op,
     path: first.path,
     stat,
-    source: last.source
+    source: last.source,
+    ...last.device !== void 0 ? { device: last.device } : {}
   };
+  if ((op === "create" || op === "modify") && typeof last.ch === "string" && last.ch.length > 0) {
+    merged.ch = last.ch;
+  }
   if (op === "rename" && oldPath !== void 0) merged.oldPath = oldPath;
   return [merged];
 }

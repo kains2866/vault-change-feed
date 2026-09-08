@@ -32,15 +32,15 @@ import { lineStat } from './core/diff';
 import { isExcluded, isTextFile, ExcludeOptions } from './core/exclude';
 import { reconcile, FileSnapshot } from './core/reconcile';
 import { readLog, appendEvents, rotateIfNeeded } from './core/logStore';
-import { writeFeedState, buildFeedState, parseFeedState, FeedState } from './core/feedState';
-import { readCursors } from './core/cursors';
+import { writeFeedState, buildFeedState, FeedState } from './core/feedState';
 import { analyzeFeedHealth } from './core/health';
+import { readAllDeviceLogs, attributeLog, dedupeByContent } from './core/feedv2';
 import { EventFeed } from './core/feed';
 import { decideLock, parseLock, verifyOwnership, WriterLock } from './core/writerLock';
 import { detectSync, SyncSignals } from './core/syncDetect';
 import { hasBlock, upsertBlock, removeBlock } from './core/protocolBlock';
 import { renderProtocolBlock } from './core/protocolTemplate';
-import { getChanges, markRead, formatEvents, mergeEvents, FeedPaths, GetChangesOptions } from './protocol';
+import { getChanges, markRead, formatEvents, mergeEvents, GetChangesOptions } from './protocol';
 import type { ChangeEvent, ChangeOp } from './core/types';
 import type { PushOptions } from './core/feed';
 import {
@@ -159,8 +159,9 @@ export default class VaultChangeFeedPlugin extends Plugin {
   settings: VaultChangeFeedSettings = { ...DEFAULT_SETTINGS };
   api = {
     getChanges: (readerName: string, opts?: GetChangesOptions) =>
-      getChanges(this.io, this.feedPaths(), readerName, opts),
-    markRead: (readerName: string, seq: number) => markRead(this.io, this.feedPaths(), readerName, seq),
+      getChanges(this.io, '', readerName, opts),
+    markRead: (readerName: string, perDevice: Record<string, number>) =>
+      markRead(this.io, '', readerName, perDevice),
   };
 
   private io!: FileIO;
@@ -322,10 +323,6 @@ export default class VaultChangeFeedPlugin extends Plugin {
 
     // vault 索引完成后再启动，避免启动期 create 事件风暴；多实例时进入待机
     this.app.workspace.onLayoutReady(() => void this.startFeed());
-  }
-
-  private feedPaths(): FeedPaths {
-    return { log: LOG_FILE, cursors: CURSORS_FILE };
   }
 
   private excludeOpts(): ExcludeOptions {
@@ -1211,44 +1208,52 @@ export default class VaultChangeFeedPlugin extends Plugin {
     menu.showAtMouseEvent(event);
   }
 
-  /** 事件浏览器：最近 400 条原始事件，按路径筛选 */
+  /** 事件浏览器：最近 400 条原始事件（跨设备 ch 去重），按路径筛选 */
   private async browseEvents(): Promise<void> {
     try {
-      const { events } = await readLog(this.io, LOG_FILE);
-      const sorted = [...events].sort((a, b) => a.seq - b.seq);
-      new FeedBrowserModal(this.app, sorted.slice(-400)).open();
+      const logs = await readAllDeviceLogs(this.io, '');
+      const all = logs
+        .flatMap(l => attributeLog(l.device, l.events))
+        .sort((a, b) => a.ts - b.ts || (a.device ?? '').localeCompare(b.device ?? '') || a.seq - b.seq);
+      const events = dedupeByContent(all);
+      new FeedBrowserModal(this.app, events.slice(-400)).open();
     } catch (err) {
       new Notice(t('noticeBrowseFailed'));
       console.error('vault-change-feed browse failed', err);
     }
   }
 
-  /** Check feed health：解析日志/游标/状态文件并弹出报告 */
+  /** Check feed health：遍历各设备日志/状态文件并弹出报告 */
   private async checkFeedHealth(): Promise<void> {
     try {
-      const { events } = await readLog(this.io, LOG_FILE);
-      const cursors = await readCursors(this.io, CURSORS_FILE);
-      const h = analyzeFeedHealth(events, cursors);
-
-      let stateLine = 'feed-state.json: not present';
-      if (await this.io.exists(FEED_STATE_FILE)) {
-        const parsed = parseFeedState(await this.io.read(FEED_STATE_FILE));
-        stateLine = parsed
-          ? `feed-state.json: ok (max=${parsed.maxSeq}, count=${parsed.count})${parsed.maxSeq === h.maxSeq ? '' : ' — WARN: maxSeq differs from log!'}`
-          : 'feed-state.json: unreadable/invalid';
+      const logs = await readAllDeviceLogs(this.io, '');
+      let total = 0;
+      let dupSeqs = 0;
+      let descPairs = 0;
+      let globalMin: number | null = null;
+      let globalMax: number | null = null;
+      const perDev: string[] = [];
+      for (const l of logs) {
+        const h = analyzeFeedHealth(l.events, {});
+        total += h.total;
+        dupSeqs += h.duplicateSeqs;
+        descPairs += h.descendingPairs;
+        if (h.minSeq !== null && (globalMin === null || h.minSeq < globalMin)) globalMin = h.minSeq;
+        if (h.maxSeq !== null && (globalMax === null || h.maxSeq > globalMax)) globalMax = h.maxSeq;
+        perDev.push(
+          `${l.device.slice(0, 8)}…: ${h.total} events [${h.minSeq ?? '-'}..${h.maxSeq ?? '-'}]`,
+        );
       }
 
       const issues: string[] = [];
-      if (h.duplicateSeqs > 0) issues.push(`duplicate seq pairs: ${h.duplicateSeqs}`);
-      if (h.descendingPairs > 0) issues.push(`out-of-order seq pairs: ${h.descendingPairs}`);
-      if (h.readersAhead > 0) issues.push(`readers with cursor > maxSeq: ${h.readersAhead}`);
-      if (h.total === 0) issues.push('log is empty (normal on first run)');
+      if (dupSeqs > 0) issues.push(`duplicate seq pairs (within device): ${dupSeqs}`);
+      if (descPairs > 0) issues.push(`out-of-order seq pairs: ${descPairs}`);
+      if (total === 0) issues.push('no events yet (normal on first run)');
 
       const lines = [
-        `changelog.jsonl: ${h.total} events, seq range [${h.minSeq ?? '-'}..${h.maxSeq ?? '-'}]`,
-        `seq continuity: ${h.missingSeqs} missing number(s)${h.missingSeqs > 0 ? ' (log rotation may truncate — informational)' : ''}`,
-        `cursors.json: ${h.readers} reader(s), ${h.readersAhead} ahead of log`,
-        stateLine,
+        `devices.json: ${logs.length} device log(s)`,
+        `total events: ${total}, seq range [${globalMin ?? '-'}..${globalMax ?? '-'}]`,
+        ...perDev,
       ];
       if (issues.length > 0) lines.push('', 'Issues:', ...issues);
 
@@ -1265,17 +1270,22 @@ export default class VaultChangeFeedPlugin extends Plugin {
 
   private async copyUnread(): Promise<void> {
     const MAX_COPY_EVENTS = 2000;
-    const res = await getChanges(this.io, this.feedPaths(), 'manual');
+    const res = await getChanges(this.io, '', 'manual');
     const truncated = res.events.length > MAX_COPY_EVENTS;
     const shown = truncated ? res.events.slice(0, MAX_COPY_EVENTS) : res.events;
-    const header = res.stale ? 'STALE: log truncated, full vault rescan advised.\n' : '';
+    const header = res.stale ? 'STALE: one or more device logs truncated, full vault rescan advised.\n' : '';
     const body = shown.length > 0 ? formatEvents(shown) : '(no changes)';
     const tail = truncated
       ? `\n…and ${res.events.length - shown.length} merged change(s) remain unread (clipboard cap ${MAX_COPY_EVENTS}).`
       : '';
     await navigator.clipboard.writeText(header + body + tail);
     // 与 hook 同策略：只把已复制部分标记已读，剩余下次命令继续消费
-    await markRead(this.io, this.feedPaths(), 'manual', truncated ? shown[shown.length - 1].seq : res.latestSeq);
+    const delivered: Record<string, number> = {};
+    for (const e of shown) {
+      const d = e.device ?? '';
+      if (d) delivered[d] = Math.max(delivered[d] ?? 0, e.seq);
+    }
+    await markRead(this.io, '', 'manual', truncated ? delivered : res.perDevice);
     new Notice(
       truncated ? t('noticeCopiedTruncated', { count: shown.length }) : t('noticeCopied', { count: res.events.length }),
     );

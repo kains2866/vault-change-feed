@@ -45,6 +45,7 @@ function mergeGroup(group: ChangeEvent[]): ChangeEvent[] {
         path: firstRename.oldPath ?? first.path,
         stat: last.stat,
         source: last.source,
+        ...(last.device !== undefined ? { device: last.device } : {}),
       },
     ];
   }
@@ -80,7 +81,12 @@ function mergeGroup(group: ChangeEvent[]): ChangeEvent[] {
     path: first.path,
     stat,
     source: last.source,
+    ...(last.device !== undefined ? { device: last.device } : {}),
   };
+  // v2：create/modify 且末条带内容哈希时透传（供读取侧 ch 去重）
+  if ((op === 'create' || op === 'modify') && typeof last.ch === 'string' && last.ch.length > 0) {
+    merged.ch = last.ch;
+  }
   if (op === 'rename' && oldPath !== undefined) merged.oldPath = oldPath;
   return [merged];
 }
