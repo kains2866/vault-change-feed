@@ -18,6 +18,7 @@ class NoOverwriteRenameIO implements FileIO {
     this.files.set(n, v);
   };
   remove = async (p: string) => { if (!this.files.delete(p)) throw new Error('ENOENT: ' + p); };
+  mkdir = async () => {};
   mkdirp = async () => {};
 }
 

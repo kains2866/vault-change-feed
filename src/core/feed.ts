@@ -5,6 +5,10 @@ export interface PushOptions {
   stat?: LineStat | null;
   source?: EventSource;
   ts?: number;
+  /** v2：写入设备 id */
+  device?: string;
+  /** v2：create/modify 记录后的内容哈希 */
+  ch?: string | null;
 }
 
 /** 事件队列：分配 seq、缓冲待写事件；带上限防落盘持续失败时内存无限增长 */
@@ -15,7 +19,7 @@ export class EventFeed {
   private readonly maxQueue: number;
 
   /** maxQueue：缓冲上限（默认 50000）；溢出时清空缓冲并注入一条 resync 通知读者全量重扫 */
-  constructor(lastSeq: number, maxQueue = 50000) {
+  constructor(lastSeq: number, maxQueue = 50000, private deviceId?: string) {
     this.nextSeq = lastSeq + 1;
     this.maxQueue = maxQueue;
   }
@@ -31,6 +35,8 @@ export class EventFeed {
         path: '',
         stat: null,
         source: 'system',
+        ...(this.deviceId !== undefined ? { device: this.deviceId } : {}),
+        ch: null,
       });
     }
     this.queue.push(e);
@@ -45,6 +51,8 @@ export class EventFeed {
       stat: opts.stat ?? null,
       source: opts.source ?? 'live',
       ...(opts.oldPath !== undefined ? { oldPath: opts.oldPath } : {}),
+      ...(opts.device !== undefined ? { device: opts.device } : {}),
+      ...(opts.ch !== undefined ? { ch: opts.ch } : {}),
     };
     this.enqueue(e);
     return e;

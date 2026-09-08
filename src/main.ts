@@ -41,7 +41,18 @@ import { detectSync, SyncSignals } from './core/syncDetect';
 import { hasBlock, upsertBlock, removeBlock } from './core/protocolBlock';
 import { renderProtocolBlock } from './core/protocolTemplate';
 import { getChanges, markRead, formatEvents, mergeEvents, FeedPaths, GetChangesOptions } from './protocol';
-import type { ChangeEvent } from './core/types';
+import type { ChangeEvent, ChangeOp } from './core/types';
+import type { PushOptions } from './core/feed';
+import {
+  eventsFile,
+  deviceStateFile,
+  baselineFile as deviceBaselineFile,
+  devicesFile,
+  registerDevice,
+  EVENTS_DIR,
+  STATE_DIR,
+  CURSORS_DIR,
+} from './core/v2store';
 import {
   VaultChangeFeedSettings,
   DEFAULT_SETTINGS,
@@ -49,6 +60,7 @@ import {
   parseGlobs,
 } from './settings';
 
+// —— 遗留单文件布局（v2 迁移前读取用；Phase3 一次性转换后删除）——
 const LOG_FILE = 'changelog.jsonl';
 const CURSORS_FILE = 'cursors.json';
 const BASELINE_FILE = 'baseline.gz';
@@ -119,6 +131,9 @@ class AdapterFileIO implements FileIO {
   async remove(p: string): Promise<void> {
     await this.adapter.remove(this.abs(p));
   }
+  async mkdir(p: string): Promise<void> {
+    await this.adapter.mkdir(this.abs(p));
+  }
   async mkdirp(): Promise<void> {
     // 插件目录的父级（configDir/plugins）必然存在，单层 mkdir 即可
     if (!(await this.adapter.exists(this.baseDir))) {
@@ -173,13 +188,57 @@ export default class VaultChangeFeedPlugin extends Plugin {
   private rescanRunning = false;
   /** 协议块写入抑制表：path → 过期时间戳（自激写入不记录为 feed 事件） */
   private suppressedWrites = new Map<string, number>();
-  /** feed-state 内存态：增量维护，rotate/init 时全量重算 */
+  /** feed-state 内存态（本设备）：增量维护，rotate/init 时全量重算 */
   private feedState: FeedState = { formatVersion: 1, minSeq: null, maxSeq: null, count: 0, updatedAt: 0 };
   /** 待展开的文件夹重命名：oldFolder → {newFolder, timer}（给子文件独立事件留窗口） */
   private pendingFolderRenames = new Map<string, { newPath: string; timer: number }>();
   /** 状态栏元素（图标 + VCF + 活动指示灯；点击弹快捷菜单） */
   private statusBarEl: HTMLElement | null = null;
   private statusLabelEl: HTMLElement | null = null;
+
+  /** 本设备各 v2 数据文件路径（io 根即插件数据目录） */
+  private devEventsFile(): string {
+    return eventsFile('', this.deviceId);
+  }
+  private devStateFile(): string {
+    return deviceStateFile('', this.deviceId);
+  }
+  private devBaselineFile(): string {
+    return deviceBaselineFile('', this.deviceId);
+  }
+
+  /** v2 布局初始化：建目录 + 登记设备索引（幂等） */
+  private async ensureV2Layout(): Promise<void> {
+    for (const dir of [EVENTS_DIR, STATE_DIR, CURSORS_DIR]) {
+      try {
+        await this.io.mkdir(dir);
+      } catch {
+        // 目录已存在等：忽略
+      }
+    }
+    try {
+      await registerDevice(this.io, '', this.deviceId);
+    } catch {
+      // 索引写失败忽略（下次成功时再登记）
+    }
+  }
+
+  /** 带设备/ch 的事件入队：本设备所有事件统一打标 */
+  private pushEv(op: ChangeOp, path: string, opts: PushOptions & { ch?: string | null } = {}): ChangeEvent {
+    return this.feed.push(op, path, { ...opts, device: this.deviceId, ch: opts.ch ?? null });
+  }
+
+  /** 外部已编号事件（reconcile/失败重入队）打上本设备与 ch 后入队 */
+  private stampAndLoad(e: ChangeEvent): void {
+    e.device = this.deviceId;
+    if (e.op === 'create' || e.op === 'modify') {
+      const ent = this.baseline.get(e.path);
+      e.ch = ent !== undefined && !ent.hash.startsWith('bin:') ? ent.hash : null;
+    } else {
+      e.ch = null;
+    }
+    this.feed.pushLoaded(e);
+  }
   private statusDotEl: HTMLElement | null = null;
   /** 最近一次 live 变更落盘时间戳（活动灯依据）；0 = 尚无 */
   private activityAt = 0;
@@ -218,6 +277,7 @@ export default class VaultChangeFeedPlugin extends Plugin {
     const dataDir = `${this.app.vault.configDir}/plugins/${this.manifest.id}`;
     this.io = new AdapterFileIO(this.app.vault.adapter, dataDir);
     await this.io.mkdirp();
+    await this.ensureV2Layout();
 
     this.addSettingTab(new VaultChangeFeedSettingTab(this.app, this));
     this.addCommand({
@@ -513,16 +573,16 @@ export default class VaultChangeFeedPlugin extends Plugin {
     // 清理崩溃/同步中断遗留的孤儿 .tmp（Windows rename 失败、同步副本等场景）
     await this.cleanupOrphanTmp();
 
-    // seq 恢复：无条件与日志尾部取 max，防 data.json 回退导致编号倒退
-    const r = await readLog(this.io, LOG_FILE);
+    // seq 恢复：无条件与本设备日志尾部取 max，防 data.json 回退导致编号倒退
+    const r = await readLog(this.io, this.devEventsFile());
     this.lastSeq = Math.max(this.lastSeq, r.maxSeq ?? 0);
-    this.feed = new EventFeed(this.lastSeq);
+    this.feed = new EventFeed(this.lastSeq, undefined, this.deviceId);
 
-    // 载入基线；缺失（首跑）或损坏都走 resync：静默重建基线 + 一条 resync 事件
+    // 载入本设备基线；缺失（首跑）或损坏都走 resync：静默重建基线 + 一条 resync 事件
     let oldBaseline: Baseline | null = null;
-    if (await this.io.exists(BASELINE_FILE)) {
+    if (await this.io.exists(this.devBaselineFile())) {
       try {
-        oldBaseline = await parseBaseline(await this.io.readBinary(BASELINE_FILE));
+        oldBaseline = await parseBaseline(await this.io.readBinary(this.devBaselineFile()));
       } catch {
         oldBaseline = null;
         new Notice(t('noticeBaselineCorrupted'));
@@ -537,11 +597,11 @@ export default class VaultChangeFeedPlugin extends Plugin {
       this.baseline = baselineFromSnapshots(snapshots);
     } else if (oldBaseline === null) {
       this.baseline = baselineFromSnapshots(snapshots);
-      this.feed.push('resync', '', { source: 'system', stat: null });
+      this.pushEv('resync', '', { source: 'system', stat: null });
     } else {
       const { events, baseline } = reconcile(oldBaseline, snapshots, this.feed.peekNextSeq(), Date.now());
       this.baseline = baseline;
-      for (const e of events) this.feed.pushLoaded(e);
+      for (const e of events) this.stampAndLoad(e);
     }
 
     // 预算计数器：对账后基线才是最新状态，全量重算一次，之后增量维护
@@ -707,9 +767,16 @@ export default class VaultChangeFeedPlugin extends Plugin {
 
   /** 清理已知的孤儿 .tmp（原子写中断/同步遗留）；单个失败忽略 */
   private async cleanupOrphanTmp(): Promise<void> {
-    for (const base of [LOG_FILE, CURSORS_FILE, FEED_STATE_FILE]) {
+    const targets = [
+      LOG_FILE,
+      CURSORS_FILE,
+      FEED_STATE_FILE,
+      this.devStateFile(),
+      devicesFile(''),
+    ];
+    for (const t of targets) {
       try {
-        const p = `${base}.tmp`;
+        const p = `${t}.tmp`;
         if (await this.io.exists(p)) await this.io.remove(p);
       } catch {
         // 忽略
@@ -825,12 +892,12 @@ export default class VaultChangeFeedPlugin extends Plugin {
         );
         this.baseline.set(f.path, entry);
         this.baselineContentBytes += entryContentBytes(entry);
-        if (record) this.feed.push('create', f.path, { stat: { added: countLines(content), removed: 0 } });
+        if (record) this.pushEv('create', f.path, { stat: { added: countLines(content), removed: 0 }, ch: entry.hash });
       } else {
         const old = this.baseline.get(f.path);
         if (old) this.baselineContentBytes -= entryContentBytes(old);
         this.baseline.set(f.path, makeBinaryEntry(f.stat.size, f.stat.mtime));
-        if (record) this.feed.push('create', f.path, { stat: null });
+        if (record) this.pushEv('create', f.path, { stat: null });
       }
       this.baselineDirty = true;
     } catch {
@@ -857,12 +924,12 @@ export default class VaultChangeFeedPlugin extends Plugin {
         );
         this.baseline.set(f.path, entry);
         this.baselineContentBytes += entryContentBytes(entry);
-        if (record) this.feed.push('modify', f.path, { stat });
+        if (record) this.pushEv('modify', f.path, { stat, ch: entry.hash });
       } else {
         const old = this.baseline.get(f.path);
         if (old) this.baselineContentBytes -= entryContentBytes(old);
         this.baseline.set(f.path, makeBinaryEntry(f.stat.size, f.stat.mtime));
-        if (record) this.feed.push('modify', f.path, { stat: null });
+        if (record) this.pushEv('modify', f.path, { stat: null });
       }
       this.baselineDirty = true;
     } catch {
@@ -878,7 +945,7 @@ export default class VaultChangeFeedPlugin extends Plugin {
     const stat = old && old.content !== null ? { added: 0, removed: countLines(old.content) } : null;
     if (old) this.baselineContentBytes -= entryContentBytes(old);
     this.baseline.delete(f.path);
-    if (record) this.feed.push('delete', f.path, { stat });
+    if (record) this.pushEv('delete', f.path, { stat });
     this.baselineDirty = true;
   }
 
@@ -918,11 +985,11 @@ export default class VaultChangeFeedPlugin extends Plugin {
     }
     if (!this.recording()) return; // 暂停：只迁移基线，不产生事件
     if (oldExcluded) {
-      this.feed.push('create', newPath, { stat: null });
+      this.pushEv('create', newPath, { stat: null });
     } else if (newExcluded) {
-      this.feed.push('delete', oldPath, { stat: null });
+      this.pushEv('delete', oldPath, { stat: null });
     } else {
-      this.feed.push('rename', newPath, { oldPath, stat: { added: 0, removed: 0 } });
+      this.pushEv('rename', newPath, { oldPath, stat: { added: 0, removed: 0 } });
     }
   }
 
@@ -946,10 +1013,10 @@ export default class VaultChangeFeedPlugin extends Plugin {
     if (!(await this.checkWriterAlive())) return;
     const events = this.feed.drain();
     try {
-      await appendEvents(this.io, LOG_FILE, events);
+      await appendEvents(this.io, this.devEventsFile(), events);
       this.lastSeq = Math.max(this.lastSeq, events[events.length - 1].seq);
       await this.saveData(this.persistedData());
-      // 增量维护 feed-state（min 以内存态为准；rotate 会全量重算修正）
+      // 增量维护本设备 feed-state（min 以内存态为准；rotate 会全量重算修正）
       if (this.feedState.minSeq === null) this.feedState.minSeq = events[0].seq;
       this.feedState.maxSeq = events[events.length - 1].seq;
       this.feedState.count += events.length;
@@ -968,19 +1035,19 @@ export default class VaultChangeFeedPlugin extends Plugin {
     }
   }
 
-  /** feed-state 写入（加速端点，失败静默不影响主链路） */
+  /** 本设备 feed-state 写入（加速端点，失败静默不影响主链路） */
   private async persistFeedState(): Promise<void> {
     try {
-      await writeFeedState(this.io, FEED_STATE_FILE, this.feedState);
+      await writeFeedState(this.io, this.devStateFile(), this.feedState);
     } catch {
       // 忽略：状态文件非关键路径
     }
   }
 
-  /** 依据当前日志全量重算 feed-state（init / rotate 后调用，修正增量维护的 min/count） */
+  /** 依据本设备日志全量重算 feed-state（init / rotate 后调用，修正增量维护的 min/count） */
   private async refreshFeedState(): Promise<void> {
     try {
-      const r = await readLog(this.io, LOG_FILE);
+      const r = await readLog(this.io, this.devEventsFile());
       this.feedState = buildFeedState({ minSeq: r.minSeq, maxSeq: r.maxSeq, count: r.events.length });
       await this.persistFeedState();
     } catch {
@@ -991,7 +1058,7 @@ export default class VaultChangeFeedPlugin extends Plugin {
   private async saveBaseline(): Promise<void> {
     if (!this.baselineDirty) return;
     if (this.feed && !(await this.checkWriterAlive())) return;
-    await this.io.writeBinary(BASELINE_FILE, await serializeBaseline(this.baseline));
+    await this.io.writeBinary(this.devBaselineFile(), await serializeBaseline(this.baseline));
     this.baselineDirty = false;
   }
 
@@ -1001,7 +1068,7 @@ export default class VaultChangeFeedPlugin extends Plugin {
     try {
       await rotateIfNeeded(
         this.io,
-        LOG_FILE,
+        this.devEventsFile(),
         this.settings.retentionMaxEntries,
         this.settings.retentionDays,
         Date.now(),

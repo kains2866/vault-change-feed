@@ -7,6 +7,7 @@ export interface FileIO {
   append(path: string, data: string): Promise<void>;
   rename(oldPath: string, newPath: string): Promise<void>;
   remove(path: string): Promise<void>;
+  mkdir(path: string): Promise<void>;
   mkdirp(): Promise<void>;
 }
 
@@ -67,6 +68,10 @@ export class MemoryFileIO implements FileIO {
 
   async remove(path: string): Promise<void> {
     if (!this.files.delete(path)) throw new Error('ENOENT: ' + path);
+  }
+
+  async mkdir(path: string): Promise<void> {
+    void path; // 内存模式无需目录结构
   }
 
   async mkdirp(): Promise<void> {}

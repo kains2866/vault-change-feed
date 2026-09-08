@@ -18,15 +18,17 @@ export const EVENTS_DIR = 'events';
 export const STATE_DIR = 'state';
 export const CURSORS_DIR = 'cursors';
 
+const P = (base: string): string => (base ? `${base}/` : '');
+
 export const eventsFile = (base: string, device: string): string =>
-  `${base}/${EVENTS_DIR}/${deviceFileKey(device)}.jsonl`;
+  `${P(base)}${EVENTS_DIR}/${deviceFileKey(device)}.jsonl`;
 export const deviceStateFile = (base: string, device: string): string =>
-  `${base}/${STATE_DIR}/${deviceFileKey(device)}.json`;
+  `${P(base)}${STATE_DIR}/${deviceFileKey(device)}.json`;
 export const readerCursorFile = (base: string, reader: string): string =>
-  `${base}/${CURSORS_DIR}/${readerFileKey(reader)}.json`;
-export const devicesFile = (base: string): string => `${base}/${DEVICES_FILE}`;
+  `${P(base)}${CURSORS_DIR}/${readerFileKey(reader)}.json`;
+export const devicesFile = (base: string): string => `${P(base)}${DEVICES_FILE}`;
 export const baselineFile = (base: string, device: string): string =>
-  `${base}/baseline-${deviceFileKey(device)}.gz`;
+  `${P(base)}baseline-${deviceFileKey(device)}.gz`;
 
 /** 文件名安全键：仅保留 [A-Za-z0-9_-]，其余替换为 '_'；空值回退 'device'/'reader' */
 export function safeFileKey(id: string, fallback: string): string {
