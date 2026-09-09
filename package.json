@@ -1,7 +1,7 @@
 {
   "name": "vault-change-feed",
   "version": "2.0.0",
-  "description": "Machine-readable vault change feed with per-reader cursors, built for AI assistants managing your Obsidian vault.",
+  "description": "Logs your manual vault edits as a lightweight machine-readable feed, so AI assistants can catch up incrementally instead of rescanning — less context waste when managing your notes.",
   "main": "main.js",
   "scripts": {
     "dev": "node esbuild.config.mjs",

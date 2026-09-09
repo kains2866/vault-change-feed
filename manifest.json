@@ -3,7 +3,7 @@
   "name": "Vault Change Feed",
   "version": "2.0.0",
   "minAppVersion": "1.5.0",
-  "description": "Records vault changes as a machine-readable feed with per-reader cursors, so AI assistants can incrementally catch up on what you changed.",
+  "description": "Logs your manual vault edits as a lightweight machine-readable feed, so AI assistants can catch up incrementally instead of rescanning — less context waste when managing your notes.",
   "author": "tiyukains",
   "isDesktopOnly": false
 }
