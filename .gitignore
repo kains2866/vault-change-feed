@@ -4,3 +4,7 @@ main.js
 .DS_Store
 
 .superpowers/
+
+# 内部文档：保留本地副本，不上传
+/CHANGELOG.md
+/AGENTS.md
